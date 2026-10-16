@@ -163,3 +163,107 @@ def test_agent_client_build_grok_image_tool(tmp_path, monkeypatch):
     assert tool is not None
     assert tool.name == "image_search"
     assert tool.parameters["required"] == ["query"]
+
+
+# ---------- 工具权限分档 ----------
+
+
+def _tool_names(client, full_access):
+    return [type(tool).__name__ for tool in client._build_tools(full_access=full_access)]
+
+
+def test_build_tools_restricted_drops_shell_and_file(tmp_path, monkeypatch):
+    """受限档必须不含 shell 与文件工具 —— 这是群里限制非白名单成员的唯一手段。"""
+    client = make_client(tmp_path, monkeypatch)
+    try:
+        from agno.tools.file import FileTools  # noqa: F401
+        from agno.tools.shell import ShellTools  # noqa: F401
+
+        importable = True
+    except Exception:
+        importable = False
+
+    full = _tool_names(client, True)
+    restricted = _tool_names(client, False)
+
+    assert "ShellTools" not in restricted
+    assert "FileTools" not in restricted
+    assert set(restricted) <= set(full)
+    if importable:
+        assert "ShellTools" in full
+        assert "FileTools" in full
+
+
+def test_get_agent_caches_per_tool_profile(tmp_path, monkeypatch):
+    """缓存键必须区分工具档位，否则受限请求会拿到完整工具的那个实例。"""
+    client = make_client(tmp_path, monkeypatch)
+    full = client._get_agent("m", None, 10.0, full_access=True, group=False)
+    restricted = client._get_agent("m", None, 10.0, full_access=False, group=False)
+    assert full is not restricted
+    assert client._get_agent("m", None, 10.0, full_access=True, group=False) is full
+
+
+def test_get_agent_group_disables_memory_by_default(tmp_path, monkeypatch):
+    """群聊默认不碰长期记忆，避免群内容污染主人记忆库。"""
+    client = make_client(tmp_path, monkeypatch, memory_enabled=True)
+    calls = {"n": 0}
+
+    def fake_memory_manager():
+        calls["n"] += 1
+        return object()
+
+    monkeypatch.setattr(client, "_get_memory_manager", fake_memory_manager)
+
+    client._get_agent("m", None, 10.0, full_access=True, group=True)
+    assert calls["n"] == 0
+
+    client._get_agent("m", None, 10.0, full_access=True, group=False)
+    assert calls["n"] == 1
+
+
+def test_get_agent_group_memory_can_be_enabled(tmp_path, monkeypatch):
+    client = make_client(
+        tmp_path, monkeypatch, memory_enabled=True, group_memory_enabled=True
+    )
+    calls = {"n": 0}
+
+    def fake_memory_manager():
+        calls["n"] += 1
+        return object()
+
+    monkeypatch.setattr(client, "_get_memory_manager", fake_memory_manager)
+    client._get_agent("m", None, 10.0, full_access=True, group=True)
+    assert calls["n"] == 1
+
+
+def test_run_passes_tool_profile_down(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    fake_agent = FakeAgent()
+    captured = {}
+
+    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False):
+        captured["model"] = model
+        captured["full_access"] = full_access
+        captured["group"] = group
+        return fake_agent
+
+    monkeypatch.setattr(client, "_get_agent", fake_get_agent)
+    asyncio.run(client.run("你好", "t-1", full_access=False, group=True))
+    assert captured["full_access"] is False
+    assert captured["group"] is True
+
+
+def test_run_defaults_to_full_access_private(tmp_path, monkeypatch):
+    """私聊调用点不传档位时必须落到完整工具 + 私聊场景。"""
+    client = make_client(tmp_path, monkeypatch)
+    captured = {}
+
+    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False):
+        captured["full_access"] = full_access
+        captured["group"] = group
+        return FakeAgent()
+
+    monkeypatch.setattr(client, "_get_agent", fake_get_agent)
+    asyncio.run(client.run("你好", "t-1"))
+    assert captured["full_access"] is True
+    assert captured["group"] is False

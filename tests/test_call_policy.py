@@ -68,6 +68,8 @@ def test_run_with_policy_delegates(monkeypatch):
                 model=None,
                 model_provider=None,
                 bypass_proxy=False,
+                full_access=True,
+                group=False,
             ):
                 captured["prompt"] = prompt
                 captured["thread_id"] = thread_id
@@ -77,6 +79,8 @@ def test_run_with_policy_delegates(monkeypatch):
                 captured["model"] = model
                 captured["model_provider"] = model_provider
                 captured["bypass_proxy"] = bypass_proxy
+                captured["full_access"] = full_access
+                captured["group"] = group
                 return "回复", "t-1"
 
         policy = call_policy.CallPolicy(reasoning_effort="low", timeout=123)
@@ -89,6 +93,8 @@ def test_run_with_policy_delegates(monkeypatch):
         assert captured["model"] is None
         assert captured["model_provider"] is None
         assert captured["bypass_proxy"] is False
+        assert captured["full_access"] is True
+        assert captured["group"] is False
 
         reply, tid = await call_policy.run_with_policy(
             FakeBridge(),
@@ -111,5 +117,26 @@ def test_run_with_policy_delegates(monkeypatch):
         )
         assert captured["model"] == "deepseek-v4-flash"
         assert captured["bypass_proxy"] is True
+
+    asyncio.run(scenario())
+
+
+def test_run_with_policy_passes_group_tool_profile():
+    """群聊里非白名单成员的调用必须带着「受限档」传到模型层。"""
+
+    async def scenario():
+        captured = {}
+
+        class FakeBridge:
+            async def _run_agent_with_retry(self, prompt, thread_id, **kwargs):
+                captured.update(kwargs)
+                return "回复", "t-1"
+
+        policy = call_policy.CallPolicy(reasoning_effort="low", timeout=60)
+        await call_policy.run_with_policy(
+            FakeBridge(), "干活", "t-0", policy, full_access=False, group=True
+        )
+        assert captured["full_access"] is False
+        assert captured["group"] is True
 
     asyncio.run(scenario())

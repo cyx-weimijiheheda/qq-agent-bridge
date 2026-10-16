@@ -11,6 +11,7 @@ from typing import Any
 
 from forward_utils import send_forward
 from message_utils import chunk_reply, extract_media_markers, split_persona_reply
+from targets import is_group
 
 
 async def send_reply(
@@ -34,7 +35,11 @@ async def send_reply(
         delay = float(bridge.cfg.get("chunk_delay_sec", 0.5))
 
     threshold = int(bridge.cfg.get("forward_threshold", 5))
-    if not media_markers and len(segments) >= threshold:
+    # 群里可以单独关掉合并转发（有些 NapCat 版本对群节点校验更严）
+    forward_allowed = not is_group(user_id) or bool(
+        bridge.cfg.get("group_forward_enabled", True)
+    )
+    if not media_markers and len(segments) >= threshold and forward_allowed:
         sender_name = str(
             bridge.cfg.get("persona_name") or bridge.cfg.get("forward_sender_name") or "AI 助手"
         )

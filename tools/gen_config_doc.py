@@ -24,7 +24,16 @@ GROUPS: list[tuple[str, str, list[str]]] = [
     (
         "连接",
         "怎么连上 QQ。",
-        ["onebot_ws_url", "full_access_qq"],
+        ["onebot_ws_url", "full_access_qq", "self_id"],
+    ),
+    (
+        "群聊",
+        "让助手在 QQ 群里也能说话。默认关闭；开启后私聊行为不受影响。",
+        [
+            "group_enabled", "group_whitelist", "group_full_access_qq",
+            "group_memory_enabled", "group_reply_at", "group_rate_limit_per_min",
+            "group_forward_enabled", "group_command_hint",
+        ],
     ),
     (
         "目录与状态文件",
@@ -196,6 +205,16 @@ DESCRIPTIONS: dict[str, str] = {
     # 连接
     "onebot_ws_url": "NapCat 的 OneBot WebSocket 地址，默认本机 3001 端口",
     "full_access_qq": "**必填**。允许使用机器人的 QQ 号列表；不在列表里的私聊会被忽略",
+    "self_id": "机器人自己的 QQ 号。用于识别群里的 `@机器人`；事件自带 self_id 时以事件为准",
+    # 群聊
+    "group_enabled": "群聊总开关。关闭时所有群消息完全不处理（默认关闭）",
+    "group_whitelist": "生效的群号列表；留空 = 不限制。建议只填自己可控的群",
+    "group_full_access_qq": "群里允许使用命令执行与文件读写的成员；留空 = 沿用 `full_access_qq`",
+    "group_memory_enabled": "群聊是否读写长期记忆。默认关闭，避免群内容污染主人的记忆库",
+    "group_reply_at": "群回复时是否先 @ 提问者（会多一条 @ 消息）",
+    "group_rate_limit_per_min": "每群每分钟最多回复多少条；0 = 不限。群人多时建议设 3–5",
+    "group_forward_enabled": "群里是否允许把长回复合并转发（NapCat 拒绝时自动回退为分条发送）",
+    "group_command_hint": "群里被 @ 且发命令时的提示语；留空 = 静默忽略。群聊暂不支持命令",
     # 目录与状态文件
     "data_dir": "日志 / 数据库 / 会话 / 记忆的存放目录，默认项目下的 `data/`",
     "workdir": "助手的文件读写与命令执行范围；留空 = 项目目录。建议使用专用的空目录",

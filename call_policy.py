@@ -59,8 +59,14 @@ async def run_with_policy(
     model: str | None = None,
     model_provider: str | None = None,
     bypass_proxy: bool = False,
+    full_access: bool = True,
+    group: bool = False,
 ) -> tuple[str, str | None]:
-    """统一入口：按策略调用桥接的 Codex 重试封装。"""
+    """统一入口：按策略调用桥接的 Codex 重试封装。
+
+    full_access/group 决定模型装配哪一档工具：群聊里非白名单成员会被降为
+    受限档（不含 shell 与文件读写工具）。
+    """
     return await bridge._run_agent_with_retry(
         prompt,
         thread_id,
@@ -70,4 +76,6 @@ async def run_with_policy(
         model=model,
         model_provider=model_provider,
         bypass_proxy=bypass_proxy,
+        full_access=full_access,
+        group=group,
     )

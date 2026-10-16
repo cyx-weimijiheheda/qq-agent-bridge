@@ -77,6 +77,7 @@ def fake_agent_core_for_bridge_tests(monkeypatch, request):
     short_name = module_name.rsplit(".", 1)[-1]
     if short_name not in {
         "test_bridge_flow",
+        "test_group_flow",
         "test_proactive_bridge",
         "test_voice_bridge",
         "test_channels",
@@ -94,6 +95,8 @@ def fake_agent_core_for_bridge_tests(monkeypatch, request):
         model=None,
         model_provider=None,
         bypass_proxy=False,
+        full_access=True,
+        group=False,
     ):
         exit_code = os.environ.get("FAKE_AGENT_EXIT_CODE")
         if exit_code:

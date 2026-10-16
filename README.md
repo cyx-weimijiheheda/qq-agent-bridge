@@ -17,6 +17,7 @@
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [配置](#配置)
+- [群聊](#群聊)
 - [使用](#使用)
 - [自定义人格](#自定义人格)
 - [可选能力](#可选能力)
@@ -34,6 +35,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 文字对话 | 多轮上下文；长期记忆持久化到本地 SQLite，可关闭 |
+| 群聊 | 默认关闭；被 @ 时才回复，整群共用一个会话，敏感能力仅限白名单成员 |
 | 图片理解 | 图片直接交给多模态模型；描述中出现不确定项时自动联网补查 |
 | 视频分析 | 下载后抽帧逐帧描述，结合字幕与语音转写，输出结构化总结 |
 | 文件收发 | 读取 QQ 发来的文档（PDF 支持 OCR 兜底）；模型产出的文件以 `[FILE:]` 标记发回 |
@@ -162,6 +164,39 @@ start.bat           # Windows
 | 开启主动消息 | `proactive_enabled` 及同组配置 |
 | 自定义人格 | `persona_name`、`persona_prompt` |
 | 开启 Web 工作台 | `web_enabled`、`web_token` |
+| 让助手在群里说话 | `group_enabled`、`group_whitelist`、`self_id` |
+
+## 群聊
+
+**默认关闭。** 开启后助手会响应群里的 `@`，私聊行为完全不变。
+
+```json
+{
+  "self_id": "机器人自己的QQ号",
+  "group_enabled": true,
+  "group_whitelist": ["要启用的群号"],
+  "group_full_access_qq": ["可信成员的QQ号"]
+}
+```
+
+| 配置项 | 说明 |
+| --- | --- |
+| `group_enabled` | 总开关。关闭时群消息完全不处理 |
+| `group_whitelist` | 生效的群号；留空 = 不限制。建议只填自己可控的群 |
+| `group_full_access_qq` | 群里可用命令执行与文件读写的成员；留空 = 沿用 `full_access_qq` |
+| `group_memory_enabled` | 群聊是否读写长期记忆，默认 **关闭** |
+| `group_reply_at` | 回复时是否先 @ 提问者，默认关闭 |
+| `group_rate_limit_per_min` | 每群每分钟回复上限，`0` = 不限 |
+| `group_command_hint` | 群里发命令时的提示语，留空 = 静默忽略 |
+
+行为要点：
+
+- **只响应被 @ 的消息**。未 @ 的群消息不进缓冲、不调用模型。`@全体成员` 不算提及。
+- **一个群共用一个会话**，群成员共享上下文；每条消息都会标注发言人，模型据此区分谁在说话。
+- **权限分档**：群里任何人都能聊天，但不在 `group_full_access_qq` 里的成员，其请求会用「不含 shell 与文件读写工具」的模型实例处理 —— 工具根本没装配，而不是靠提示词劝阻。
+- **群聊默认不读写长期记忆**：否则群成员的对话会写进主人的记忆库，主人的记忆也会被注入到群里。需要时可开 `group_memory_enabled`。
+- **命令在群里不执行**：`/提醒`、`/待办`、`/任务`、`/知识库`、`/课表` 等会被拦下并回一句提示（可用 `group_command_hint` 自定义或置空静默）。这些子系统仍是「单个主人」作用域的，留待后续版本。
+- 支持文字对话、图片理解以及文件收发（群文件走 `get_group_file_url` / `upload_group_file`）。
 
 ## 使用
 
@@ -441,8 +476,8 @@ sudo systemctl enable --now qq-agent-bridge
 
 ### 发送消息无响应
 
-依次检查：NapCat 是否运行且已用小号登录；发送方 QQ 号是否在 `full_access_qq` 中；是否为私聊消息。
-仍无响应时查看 `data/bridge.log`。
+私聊依次检查：NapCat 是否运行且已用小号登录；发送方 QQ 号是否在 `full_access_qq` 中。
+群聊见下方「群里 @ 了机器人却没反应」。仍无响应时查看 `data/bridge.log`。
 
 ### 启动报「未配置模型 API key」
 
@@ -464,14 +499,20 @@ sudo systemctl enable --now qq-agent-bridge
 
 `[FILE:]` 中的路径必须是运行程序所在机器上的绝对路径，且文件真实存在。
 
-### 是否支持群聊
+### 群里 @ 了机器人却没反应
 
-当前仅支持私聊。
+依次检查：`group_enabled` 是否为 `true`；群号是否在 `group_whitelist` 里；`self_id` 是否填了机器人自己的 QQ 号（@ 检测要用它）；是否真的 @ 了机器人（`@全体成员` 不算）。
+
+### 群里发命令没反应
+
+群聊暂不支持命令，这是有意为之 —— 提醒、待办、任务等子系统目前仍是「单个主人」作用域的，群里多人共用会互相污染。被 @ 且发命令时会回一句 `group_command_hint`（默认「群里暂不支持命令，可以私聊我」）。
 
 ## 安全建议
 
 - **密钥不要入库**：`config.json` 已在 `.gitignore` 中；更推荐通过 `QQBOT_API_KEY` 环境变量注入。
 - **`full_access_qq` 仅填写可信账号**：列表内的账号可以使用命令执行与文件读写能力。
+- **群聊白名单收紧**：`group_whitelist` 只填自己可控的群；`group_full_access_qq` 只填可信成员。
+  不在该列表里的群成员仍可聊天，但拿不到 shell 与文件工具。
 - **`workdir` 使用专用目录**：避免指向家目录、桌面或代码仓库。
 - **Web 工作台仅监听本机**：保持 `web_host` 为 `127.0.0.1`；需要远程访问时使用 SSH 隧道或反向代理 + HTTPS。
 - **`web_token` 使用随机长字符串**。
@@ -480,7 +521,8 @@ sudo systemctl enable --now qq-agent-bridge
 ## 开发
 
 - Python 3.10+，全异步实现。核心模块：`bridge.py`（编排）、`handlers.py`（消息处理管线）、
-  `agent_client.py`（模型 / 工具 / 记忆）、`media.py`（媒体收发）、`message_utils.py`（提示词与消息分类）。
+  `agent_client.py`（模型 / 工具 / 记忆）、`media.py`（媒体收发）、`message_utils.py`（提示词与消息分类）、
+  `targets.py`（会话寻址：私聊键为裸 QQ 号，群聊键为 `g:<群号>`，发送层据此自动选择接口）。
 - 新增配置项：在 `config.py` 的 `DEFAULTS` 中添加键 → 运行 `python tools/gen_config_doc.py`
   重新生成 [CONFIG.md](CONFIG.md)（未补说明时脚本会拒绝生成，测试同样会拦截）。
 - 新增技能：在 `skills/` 下实现纯函数 → 在 `skills_registry.py` 中注册 → 加入 `skills_enabled`。
@@ -501,6 +543,8 @@ and any OpenAI-compatible model endpoint.
 
 - Understands text, images, videos and documents; can run tasks inside a sandboxed working directory
   and send generated files back to the chat.
+- Optional group support (off by default): replies only when @-mentioned, one shared session per group,
+  and shell/file tools stay restricted to whitelisted members.
 - Includes reminders, todos, a task queue, a local knowledge base and optional proactive messages.
 - Runs on Windows / macOS / Linux (`start.bat` / `start.sh`).
 - Configure via `config.json` or `QQBOT_<KEY>` environment variables; all ~180 options are documented

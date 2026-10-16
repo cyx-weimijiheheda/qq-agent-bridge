@@ -8,20 +8,34 @@ from pathlib import Path
 from typing import Any
 
 
-def extract_private_message(event: dict[str, Any]) -> dict[str, Any] | None:
-    if event.get("post_type") != "message" or event.get("message_type") != "private":
-        return None
+def _parse_segments(event: dict[str, Any], self_id: str = "") -> dict[str, Any]:
+    """解析 OneBot 消息段，私聊与群聊共用。
+
+    @ 段的处理：@ 到机器人自己只记 `mentioned_bot` 并从正文剔除（否则模型会看到
+    `@机器人` 这种噪音）；@ 其他人转成 `@<qq>` 文本保留，让模型知道这条在叫谁；
+    @全体成员单独记 `at_all`，不当作对机器人的提及。
+    """
     text_parts: list[str] = []
     images: list[dict[str, str]] = []
     videos: list[dict[str, str]] = []
     files: list[dict[str, str]] = []
     faces: list[dict[str, str]] = []
     mfaces: list[dict[str, str]] = []
+    mentioned_bot = False
+    at_all = False
     for seg in event.get("message", []) or []:
         data = seg.get("data", {}) or {}
         seg_type = seg.get("type")
         if seg_type == "text":
             text_parts.append(str(data.get("text", "")))
+        elif seg_type == "at":
+            target = str(data.get("qq", "") or "")
+            if target == "all":
+                at_all = True
+            elif self_id and target == str(self_id):
+                mentioned_bot = True
+            elif target:
+                text_parts.append(f"@{target}")
         elif seg_type == "image":
             url = str(data.get("url", "") or "")
             file_ref = str(data.get("file", "") or "")
@@ -58,14 +72,51 @@ def extract_private_message(event: dict[str, Any]) -> dict[str, Any] | None:
             if mface["emoji_id"] or mface["emoji_package_id"]:
                 mfaces.append(mface)
     return {
-        "message_id": str(event.get("message_id", "")),
-        "user_id": str(event.get("user_id", "")),
         "text": "".join(text_parts).strip(),
         "images": images,
         "videos": videos,
         "files": files,
         "faces": faces,
         "mfaces": mfaces,
+        "mentioned_bot": mentioned_bot,
+        "at_all": at_all,
+    }
+
+
+def extract_private_message(event: dict[str, Any]) -> dict[str, Any] | None:
+    """解析私聊消息；群消息返回 None（交给 extract_group_message）。"""
+    if event.get("post_type") != "message" or event.get("message_type") != "private":
+        return None
+    parsed = _parse_segments(event, str(event.get("self_id") or ""))
+    return {
+        "scene": "private",
+        "message_id": str(event.get("message_id", "")),
+        "user_id": str(event.get("user_id", "")),
+        **parsed,
+    }
+
+
+def extract_group_message(
+    event: dict[str, Any], self_id: str = ""
+) -> dict[str, Any] | None:
+    """解析群消息；私聊消息返回 None。
+
+    比私聊多返回 `group_id`（作会话键）、`nickname`（群名片优先）与
+    `mentioned_bot`（是否 @ 到机器人）。`self_id` 参数为兜底：
+    事件自带 self_id 时优先用事件里的。
+    """
+    if event.get("post_type") != "message" or event.get("message_type") != "group":
+        return None
+    resolved = str(event.get("self_id") or self_id or "")
+    parsed = _parse_segments(event, resolved)
+    sender = event.get("sender") or {}
+    return {
+        "scene": "group",
+        "message_id": str(event.get("message_id", "")),
+        "user_id": str(event.get("user_id", "")),
+        "group_id": str(event.get("group_id", "")),
+        "nickname": str(sender.get("card") or sender.get("nickname") or ""),
+        **parsed,
     }
 
 

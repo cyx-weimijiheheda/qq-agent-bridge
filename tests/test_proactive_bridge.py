@@ -102,6 +102,8 @@ class RecordingCodex(AgentClient):
         model: str | None = None,
         model_provider: str | None = None,
         bypass_proxy: bool = False,
+        full_access: bool = True,
+        group: bool = False,
     ) -> tuple[str, str | None]:
         self.calls.append(
             {
@@ -111,6 +113,8 @@ class RecordingCodex(AgentClient):
                 "model": model,
                 "model_provider": model_provider,
                 "bypass_proxy": bypass_proxy,
+                "full_access": full_access,
+                "group": group,
             }
         )
         return "……看到了。", "t-1"
@@ -396,7 +400,12 @@ def test_proactive_strips_skill_loading_meta_from_sent_messages(monkeypatch):
             bridge, store = make_bridge(tmp)
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 return (
                     "技能已在此会话加载（SKILL.md 及 resource 资源均已读取）。当前时间 21:01，处于可主动时段（09:00–23:30），距上一次开口已过 4 小时。\n"
@@ -529,7 +538,12 @@ def test_describe_image_still_enriches_on_uncertainty(monkeypatch):
                 return "画面描述。\n【不确定项】：身份未知"
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 return "补充结论", None
 
@@ -548,7 +562,12 @@ def test_vision_enrichment_triggers_on_uncertainty(monkeypatch):
             bridge, store = make_bridge(tmp, vision_enrich_enabled=True)
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 assert thread_id is None
                 return "这是 LINE 布朗熊", None
@@ -570,7 +589,12 @@ def test_vision_enrichment_skips_empty_uncertainty_section(monkeypatch):
             called = False
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 nonlocal called
                 called = True
@@ -591,7 +615,12 @@ def test_vision_enrichment_skips_clear_description(monkeypatch):
             called = False
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 nonlocal called
                 called = True
@@ -612,7 +641,12 @@ def test_vision_enrichment_disabled(monkeypatch):
             called = False
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 nonlocal called
                 called = True
@@ -637,7 +671,12 @@ def test_enrich_vision_uses_enrich_timeout(monkeypatch):
             captured: dict[str, int] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["timeout"] = timeout
                 return "结论", None
@@ -657,7 +696,12 @@ def test_process_buffer_serializes_concurrent_calls(monkeypatch):
             state = {"active": 0, "max": 0, "calls": 0}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 state["active"] += 1
                 state["calls"] += 1
@@ -692,7 +736,12 @@ def test_enrich_vision_uses_low_reasoning_and_timeout(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["timeout"] = timeout
                 captured["reasoning_effort"] = reasoning_effort
@@ -713,7 +762,12 @@ def test_roleplay_casual_uses_low_reasoning_effort(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["reasoning_effort"] = reasoning_effort
                 return "……嗯。", None
@@ -734,7 +788,12 @@ def test_task_uses_max_reasoning_effort(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["reasoning_effort"] = reasoning_effort
                 return "收到，任务完成。", None
@@ -755,7 +814,12 @@ def test_process_buffer_retries_then_friendly_on_persistent_error(monkeypatch):
             calls = {"n": 0}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 calls["n"] += 1
                 raise AgentError("Codex 提前退出（退出码 0）：空回复")
@@ -779,7 +843,12 @@ def test_process_buffer_retry_succeeds_second_time(monkeypatch):
             calls = {"n": 0}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 calls["n"] += 1
                 if calls["n"] == 1:
@@ -804,7 +873,12 @@ def test_process_buffer_resets_persona_thread_on_codex_error(monkeypatch):
             store.set_persona_thread("10001", "thread-old")
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 raise AgentError("Codex 提前退出（退出码 0）：空回复")
 
@@ -826,7 +900,12 @@ def test_roleplay_casual_uses_roleplay_timeout(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["timeout"] = timeout
                 return "……嗯。", None
@@ -847,7 +926,12 @@ def test_followup_after_task_uses_task_timeout(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["timeout"] = timeout
                 return "收到，任务完成。", None
@@ -874,7 +958,12 @@ def test_greeting_after_task_stays_casual(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["timeout"] = timeout
                 return "……嗯。", None
@@ -898,7 +987,12 @@ def test_task_uses_task_timeout(monkeypatch):
             captured: dict[str, object] = {}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 captured["timeout"] = timeout
                 return "收到，任务完成。", None
@@ -918,7 +1012,12 @@ def test_task_stage_on_timeout_writes_pending_and_keeps_thread(monkeypatch):
             bridge, store = make_bridge(tmp, task_stage_enabled=True)
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 raise AgentError(
                     "Codex 处理超时，已终止任务",
@@ -952,7 +1051,12 @@ def test_casual_timeout_resets_thread_not_stage(monkeypatch):
             store.set_persona_thread("10001", "thread-old")
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 raise AgentError("Codex 处理超时，已终止任务", timeout=True)
 
@@ -990,7 +1094,12 @@ def test_resume_task_stage_continues_on_confirm(monkeypatch):
             calls = {"n": 0}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 calls["n"] += 1
                 return "任务完成。", None
@@ -1027,7 +1136,12 @@ def test_resume_task_stage_stops_on_stop(monkeypatch):
             calls = {"n": 0}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 calls["n"] += 1
                 return "不应调用", None
@@ -1061,7 +1175,12 @@ def test_pending_task_stage_blocks_other_messages(monkeypatch):
             calls = {"n": 0}
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 calls["n"] += 1
                 return "不应调用", None
@@ -1086,7 +1205,12 @@ def test_proactive_skips_when_user_lock_held(monkeypatch):
             called = False
 
             async def fake_agent_run(
-                prompt, thread_id, timeout=None, reasoning_effort=None, image_paths=None
+                prompt,
+                thread_id,
+                timeout=None,
+                reasoning_effort=None,
+                image_paths=None,
+                **kwargs,
             ):
                 nonlocal called
                 called = True
@@ -1246,6 +1370,8 @@ def test_native_vision_falls_back_to_local_vision_and_flash(monkeypatch):
                     model=None,
                     model_provider=None,
                     bypass_proxy=False,
+                    full_access=True,
+                    group=False,
                 ):
                     self.calls.append(
                         {
@@ -1299,6 +1425,8 @@ def test_text_only_fallback_uses_fallback_model(monkeypatch):
                     model=None,
                     model_provider=None,
                     bypass_proxy=False,
+                    full_access=True,
+                    group=False,
                 ):
                     self.calls.append(
                         {
@@ -1343,6 +1471,8 @@ def test_fallback_disabled_keeps_original_error(monkeypatch):
                     model=None,
                     model_provider=None,
                     bypass_proxy=False,
+                    full_access=True,
+                    group=False,
                 ):
                     self.calls.append(
                         {

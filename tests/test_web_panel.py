@@ -89,6 +89,8 @@ def test_web_chat_uses_bridge_pipeline(tmp_path):
             model=None,
             model_provider=None,
             bypass_proxy=False,
+            full_access=True,
+            group=False,
         ):
             return "网页回复", "thread-web"
 

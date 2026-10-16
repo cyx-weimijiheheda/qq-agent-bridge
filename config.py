@@ -34,6 +34,17 @@ DEFAULTS: dict[str, Any] = {
     "onebot_ws_url": "ws://127.0.0.1:3001",
     # 允许使用机器人全部权限的 QQ 号（必填）；留空会启动失败并给出提示
     "full_access_qq": [],
+    # 机器人自身 QQ 号；群聊 @ 检测的兜底（事件里没带 self_id 时用它）
+    "self_id": "",
+    # ---------- 群聊（默认关闭，开启后私聊行为不受影响）----------
+    "group_enabled": False,  # 群聊总开关；关闭时群消息完全不处理
+    "group_whitelist": [],  # 生效的群号，留空 = 不限制
+    "group_full_access_qq": [],  # 群里可用命令执行与文件读写的成员，留空 = 沿用 full_access_qq
+    "group_memory_enabled": False,  # 群聊是否读写长期记忆；默认关，避免群内容污染主人记忆库
+    "group_reply_at": False,  # 群回复时是否 @ 提问者
+    "group_rate_limit_per_min": 0,  # 每群每分钟回复上限；0 = 不限
+    "group_forward_enabled": True,  # 群里是否允许合并转发长回复
+    "group_command_hint": "群里暂不支持命令，可以私聊我",  # 群里被 @ 且发命令时的提示；留空 = 静默忽略
     # ---------- 数据目录 ----------
     # 状态数据目录（日志 / SQLite / 会话 / 记忆）。留空 = 项目下的 data/
     "data_dir": "data",
@@ -492,6 +503,12 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     cfg["_config_path"] = str(config_path) if config_path else ""
     cfg["_project_dir"] = str(PROJECT_DIR)
     cfg["full_access_qq"] = [str(item) for item in (cfg.get("full_access_qq") or [])]
+    cfg["group_whitelist"] = [str(item) for item in (cfg.get("group_whitelist") or [])]
+    cfg["group_full_access_qq"] = [
+        str(item) for item in (cfg.get("group_full_access_qq") or [])
+    ]
+    if cfg.get("self_id") is not None:
+        cfg["self_id"] = str(cfg.get("self_id") or "")
     if not cfg["full_access_qq"]:
         raise ValueError(
             "未配置允许使用的 QQ 号：请将 config.example.json 复制为 config.json，"

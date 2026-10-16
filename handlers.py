@@ -361,7 +361,9 @@ async def _collect_file_infos(bridge: Any, buf: Any) -> list[str]:
     for file in buf.files:
         logging.info("收到文件：%s", file)
         try:
-            path = await bridge._download_incoming_file(file)
+            path = await bridge._download_incoming_file(
+                file, group_id=getattr(buf, "group_id", "") or ""
+            )
             size = Path(path).stat().st_size
             info = f"{path}（{file.get('name') or Path(path).name}，{size} 字节）"
             if bridge.cfg.get("pdf_ocr_enabled", True) and Path(path).suffix.lower() == ".pdf":
@@ -400,7 +402,89 @@ def _collect_sticker_infos(buf: Any) -> list[str]:
     return sticker_infos
 
 
+async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
+    """群聊精简流程：只走「人格对话 + 媒体收发」。
+
+    命令、插件、课表、任务判定与分阶段、记忆读写、主动消息一律不参与 ——
+    这些子系统的作用域仍是「单个主人」，群消息流进去会互相污染。
+    """
+    text = buf.compose()
+    # 命令检测必须看原始文本：compose() 在群聊里会给每条加「发言人：」前缀
+    raw_text = "\n".join(buf.texts).strip()
+    if not raw_text and not (buf.images or buf.videos or buf.files):
+        return
+
+    # 群里发命令不执行，只回一句提示（group_command_hint 置空则静默忽略）
+    if raw_text.startswith("/"):
+        hint = str(bridge.cfg.get("group_command_hint") or "")
+        if hint:
+            await bridge._send_private(session_key, hint)
+        return
+
+    if not bridge._group_rate_ok(session_key):
+        logging.info("群 %s 触发回复限流，跳过本次", session_key)
+        return
+
+    image_paths, descriptions = await _collect_images(
+        bridge, buf, bool(bridge.cfg.get("vision_native", True)), text
+    )
+    link_videos, link_video_errors = await _collect_link_videos(bridge, text)
+    all_videos = list(buf.videos) + link_videos
+    video_infos = await _collect_video_infos(bridge, all_videos)
+    for error in link_video_errors:
+        video_infos.append(f"（{error}）")
+    file_infos = await _collect_file_infos(bridge, buf)
+    sticker_infos = _collect_sticker_infos(buf)
+
+    prompt = build_persona_prompt(
+        bridge.cfg.get("persona_skill", ""),
+        text,
+        descriptions,
+        image_count=len(image_paths),
+        file_infos=file_infos,
+        sticker_infos=sticker_infos,
+        video_infos=video_infos or None,
+        casual_multipart=True,
+        memory_text="",  # 群聊不注入主人记忆
+        cfg=bridge.cfg,
+    )
+    prompt += (
+        "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
+        f"当前群号 {buf.group_id}，上面每条消息前都标了发言人。"
+        "回复要简短、面向群里所有人，不要用私聊口吻点名某个人。\n"
+    )
+
+    thread_id = bridge.store.get_persona_thread(session_key)
+    try:
+        reply, new_thread_id = await run_with_policy(
+            bridge,
+            prompt,
+            thread_id,
+            resolve_policy(bridge.cfg, "casual"),
+            image_paths=image_paths or None,
+            full_access=bool(getattr(buf, "full_access", True)),
+            group=True,
+        )
+    except AgentError as exc:
+        logging.error("群聊模型调用失败：%s", exc)
+        await bridge._send_private(session_key, "……刚才没接上，再说一次？")
+        return
+
+    if new_thread_id:
+        bridge.store.set_persona_thread(session_key, new_thread_id)
+    reply = sanitize_persona_reply(reply)
+    if bridge.cfg.get("group_reply_at", False) and buf.sender_id:
+        # @ 必须在文本之前单独发一段，文本里没法表达 at 段
+        await bridge._send_private_segments(
+            session_key, [{"type": "at", "data": {"qq": str(buf.sender_id)}}]
+        )
+    await send_reply(bridge, session_key, reply, persona_mode=True, task_mode=False)
+
+
 async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
+    if getattr(buf, "scene", "private") == "group":
+        await process_group_buffer(bridge, user_id, buf)
+        return
     with bridge.store.batch():
         text = buf.compose()
         if bridge._pending_task_stage_waiting():
