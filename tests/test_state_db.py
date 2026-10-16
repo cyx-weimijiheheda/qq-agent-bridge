@@ -102,3 +102,42 @@ def test_state_db_uses_indexes(tmp_path):
     assert "idx_reminders_due" in indexes
     assert "idx_todos_user" in indexes
     assert "idx_tasks_user_status" in indexes
+
+
+# ── 作用域约束（带 user_id 的变更）────────────────────
+
+
+def test_cancel_reminder_marks_cancelled_not_done(tmp_path):
+    """取消与完成是两种状态；cancel 若写 'done'，「取消」就没有意义了。"""
+    db = StateDB(tmp_path / "state.db")
+    rid = db.create_reminder("10001", "喝水", "2026-09-01T09:00:00")
+    assert db.cancel_reminder(rid) is True
+    assert db.get_reminder(rid)["status"] == "cancelled"
+    # 已取消的不该再被调度触发
+    assert db.list_due_reminders("2099-01-01T00:00:00") == []
+
+
+def test_scoped_mutations_reject_other_user(tmp_path):
+    db = StateDB(tmp_path / "state.db")
+    rid = db.create_reminder("10001", "喝水", "2026-09-01T09:00:00")
+    todo_id = db.add_todo("10001", "写周报")
+
+    assert db.complete_todo(todo_id, user_id="99999") is False
+    assert db.get_todo(todo_id)["done"] == 0
+    assert db.delete_todo(todo_id, user_id="99999") is False
+    assert db.get_todo(todo_id) is not None
+    assert db.cancel_reminder(rid, user_id="99999") is False
+    assert db.get_reminder(rid)["status"] == "active"
+
+    # 归属正确时才生效
+    assert db.complete_todo(todo_id, user_id="10001") is True
+    assert db.delete_todo(todo_id, user_id="10001") is True
+    assert db.get_todo(todo_id) is None
+
+
+def test_distinct_user_ids(tmp_path):
+    db = StateDB(tmp_path / "state.db")
+    db.create_reminder("10001", "喝水", "2026-09-01T09:00:00")
+    db.add_todo("web-main", "写周报")
+    db.add_task("10001", "task", "跑个任务")
+    assert db.distinct_user_ids() == ["10001", "web-main"]

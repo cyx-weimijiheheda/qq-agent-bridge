@@ -58,6 +58,8 @@
 | `workdir` | `""` | 助手的文件读写与命令执行范围；留空 = 项目目录。建议使用专用的空目录 |
 | `log_file` | `bridge.log` | 日志文件名（相对 `data_dir`） |
 | `log_level` | `INFO` | 日志级别：DEBUG / INFO / WARNING / ERROR |
+| `log_max_bytes` | `5242880` | 单个日志文件多大后轮转（字节）；`0` = 不轮转 |
+| `log_backup_count` | `3` | 轮转后保留的历史日志份数（`bridge.log.1`、`.2` …）；`0` = 不保留 |
 | `state_db_file` | `state.db` | 提醒 / 待办 / 任务 / 知识库索引的 SQLite 文件 |
 | `sessions_file` | `sessions.json` | QQ 会话 ID 与轮次的 JSON 文件 |
 | `memory_db` | `memory.db` | 助手的会话历史与长期记忆 SQLite 文件 |

@@ -54,7 +54,15 @@ async def cmd_task_cancel(bridge: Any, user_id: str, args: str) -> None:
     except ValueError:
         await _send(bridge, user_id, "用法：/任务取消 <id>")
         return
-    if bridge.task_manager.cancel(task_id):
+    result = bridge.task_manager.cancel_task(task_id, user_id)
+    reason = result.get("reason")
+    if reason == "cancelled":
         await _send(bridge, user_id, f"已取消任务 #{task_id}。")
+    elif reason == "already_final":
+        await _send(bridge, user_id, f"任务 #{task_id} 已经结束了（{result.get('status')}）。")
+    elif reason == "running_not_cancellable":
+        await _send(
+            bridge, user_id, result.get("message") or f"任务 #{task_id} 正在执行，取消不了。"
+        )
     else:
         await _send(bridge, user_id, f"未找到任务 #{task_id}。")

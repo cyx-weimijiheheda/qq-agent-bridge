@@ -9,6 +9,7 @@ import shlex
 import sys
 import time
 from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -792,13 +793,21 @@ async def main() -> None:
     cfg = load_config()
     log_file = Path(cfg["log_file"])
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    # 按大小轮转，避免长跑之后 bridge.log 无限增长；log_max_bytes<=0 视为关闭轮转。
+    max_bytes = int(cfg.get("log_max_bytes") or 0)
+    if max_bytes > 0:
+        file_handler: logging.Handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=int(cfg.get("log_backup_count") or 0),
+            encoding="utf-8",
+        )
+    else:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
     logging.basicConfig(
         level=getattr(logging, str(cfg.get("log_level", "INFO")).upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(),
-        ],
+        handlers=[file_handler, logging.StreamHandler()],
     )
     logging.info("配置：%s", cfg.get("_config_path") or "（内置默认值）")
     legacy_keys = cfg.get("_legacy_keys") or []

@@ -24,6 +24,10 @@ class SessionStore:
         except Exception:
             self._data = {}
 
+    def list_keys(self) -> list[str]:
+        """已存在的全部会话键（只读，不触发写盘）。"""
+        return sorted(str(key) for key in self._data)
+
     def get_thread(self, user_id: str) -> str | None:
         return self._data.get(str(user_id), {}).get("thread_id")
 

@@ -104,6 +104,17 @@ class StateDB:
             self._conn.commit()
             return int(cur.lastrowid or 0)
 
+    def _changed(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """执行写操作并返回受影响行数。
+
+        变更类接口需要它判断「到底改到没有」：`_execute` 返回的是 lastrowid，
+        UPDATE / DELETE 拿不到有意义的值。
+        """
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return int(cur.rowcount)
+
     # ---- reminders ----
 
     def create_reminder(
@@ -131,11 +142,29 @@ class StateDB:
             (user_id,),
         )
 
-    def cancel_reminder(self, reminder_id: int) -> None:
-        self._execute("UPDATE reminders SET status = 'done' WHERE id = ?", (reminder_id,))
+    def get_reminder(self, reminder_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM reminders WHERE id = ?", (reminder_id,))
+        return rows[0] if rows else None
 
-    def mark_reminder_done(self, reminder_id: int) -> None:
-        self._execute("UPDATE reminders SET status='done' WHERE id = ?", (reminder_id,))
+    def cancel_reminder(self, reminder_id: int, user_id: str | None = None) -> bool:
+        """手动取消提醒，状态记为 `cancelled`（与「已触发完成」区分开）。
+
+        传 `user_id` 时把归属条件下推进 SQL，避免按 id 改到别人的数据。
+        """
+        sql = "UPDATE reminders SET status = 'cancelled' WHERE id = ?"
+        params: tuple[Any, ...] = (reminder_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
+
+    def mark_reminder_done(self, reminder_id: int, user_id: str | None = None) -> bool:
+        sql = "UPDATE reminders SET status = 'done' WHERE id = ?"
+        params: tuple[Any, ...] = (reminder_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
 
     def set_reminder_next(self, reminder_id: int, next_at: str) -> None:
         self._execute(
@@ -157,11 +186,25 @@ class StateDB:
             (user_id,),
         )
 
-    def complete_todo(self, todo_id: int) -> None:
-        self._execute("UPDATE todos SET done = 1 WHERE id = ?", (todo_id,))
+    def get_todo(self, todo_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM todos WHERE id = ?", (todo_id,))
+        return rows[0] if rows else None
 
-    def delete_todo(self, todo_id: int) -> None:
-        self._execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    def complete_todo(self, todo_id: int, user_id: str | None = None) -> bool:
+        sql = "UPDATE todos SET done = 1 WHERE id = ?"
+        params: tuple[Any, ...] = (todo_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
+
+    def delete_todo(self, todo_id: int, user_id: str | None = None) -> bool:
+        sql = "DELETE FROM todos WHERE id = ?"
+        params: tuple[Any, ...] = (todo_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
 
     # ---- scheduled jobs ----
 
@@ -212,6 +255,10 @@ class StateDB:
             (user_id, kind, prompt, status, _now_iso()),
         )
 
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        return rows[0] if rows else None
+
     def update_task(self, task_id: int, **fields: Any) -> None:
         allowed = {k: v for k, v in fields.items() if k in _TASK_FIELDS}
         if not allowed:
@@ -229,6 +276,16 @@ class StateDB:
                 (user_id,),
             )
         return self._query("SELECT * FROM tasks ORDER BY id DESC")
+
+    def distinct_user_ids(self) -> list[str]:
+        """三张按用户归属的表里出现过的全部 user_id，供作用域切换器枚举。"""
+        rows = self._query(
+            "SELECT user_id FROM reminders"
+            " UNION SELECT user_id FROM todos"
+            " UNION SELECT user_id FROM tasks"
+            " ORDER BY user_id"
+        )
+        return [str(row["user_id"]) for row in rows]
 
     # ---- knowledge base ----
 

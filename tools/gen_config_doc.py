@@ -39,7 +39,8 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         "目录与状态文件",
         "日志、数据库、会话、记忆放哪。相对路径相对 `data_dir` 解析。",
         [
-            "data_dir", "workdir", "log_file", "log_level", "state_db_file",
+            "data_dir", "workdir", "log_file", "log_level", "log_max_bytes",
+            "log_backup_count", "state_db_file",
             "sessions_file", "memory_db", "persona_memory_file", "timetable_file",
             "proactive_notes_file", "voice_cache_dir",
         ],
@@ -220,6 +221,8 @@ DESCRIPTIONS: dict[str, str] = {
     "workdir": "助手的文件读写与命令执行范围；留空 = 项目目录。建议使用专用的空目录",
     "log_file": "日志文件名（相对 `data_dir`）",
     "log_level": "日志级别：DEBUG / INFO / WARNING / ERROR",
+    "log_max_bytes": "单个日志文件多大后轮转（字节）；`0` = 不轮转",
+    "log_backup_count": "轮转后保留的历史日志份数（`bridge.log.1`、`.2` …）；`0` = 不保留",
     "state_db_file": "提醒 / 待办 / 任务 / 知识库索引的 SQLite 文件",
     "sessions_file": "QQ 会话 ID 与轮次的 JSON 文件",
     "memory_db": "助手的会话历史与长期记忆 SQLite 文件",

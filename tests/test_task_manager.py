@@ -79,3 +79,30 @@ def test_process_next_marks_failed_on_error(tmp_path, monkeypatch):
     task = tm.list_tasks("10001")[0]
     assert task["status"] == "failed"
     assert "boom" in task["error"]
+
+
+def test_cancel_task_running_reports_not_cancellable(tmp_path):
+    """worker 会把状态覆盖回 done/failed，所以 running 的任务取消不了 —— 要如实说。"""
+    db = StateDB(tmp_path / "state.db")
+    tm = TaskManager(None, db)
+    task_id = db.add_task("10001", "task", "跑着的任务", status="running")
+
+    result = tm.cancel_task(task_id)
+    assert result["ok"] is False
+    assert result["reason"] == "running_not_cancellable"
+    assert result["message"]
+    assert db.get_task(task_id)["status"] == "running"
+
+
+def test_cancel_task_scoped_and_missing(tmp_path):
+    db = StateDB(tmp_path / "state.db")
+    tm = TaskManager(None, db)
+    task_id = tm.submit("10001", "排队任务")
+
+    assert tm.cancel_task(task_id, user_id="99999")["reason"] == "not_found"
+    assert tm.cancel_task(424242)["reason"] == "not_found"
+
+    assert tm.cancel_task(task_id, user_id="10001")["ok"] is True
+    # 幂等：再次取消视为已终结
+    assert tm.cancel_task(task_id)["reason"] == "already_final"
+    assert tm.cancel(task_id) is True  # 旧接口语义保留

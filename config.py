@@ -267,6 +267,8 @@ DEFAULTS: dict[str, Any] = {
     "forward_sender_uin": "10000",
     "log_file": "bridge.log",
     "log_level": "INFO",
+    "log_max_bytes": 5 * 1024 * 1024,  # 单个日志文件多大后轮转（字节）；0 = 不轮转
+    "log_backup_count": 3,  # 轮转后保留的历史日志份数（bridge.log.1、.2 …）；0 = 不保留
 }
 
 #: 需要按路径展开的键（相对路径 → 相对 data_dir / 项目目录）
