@@ -56,3 +56,15 @@ def test_to_id_converts_numeric():
 def test_to_id_keeps_non_numeric():
     assert targets.to_id("web-main") == "web-main"
     assert targets.to_id(None) is None
+
+
+def test_group_member_key_round_trip():
+    key = targets.group_member_key("429949232", "3197142392")
+    assert key == "g:429949232:3197142392"
+    assert targets.parse_group_member_key(key) == ("429949232", "3197142392")
+
+
+def test_parse_group_member_key_rejects_group_and_private_keys():
+    assert targets.parse_group_member_key("g:429949232") is None
+    assert targets.parse_group_member_key("3197142392") is None
+    assert targets.parse_group_member_key("g::123") is None

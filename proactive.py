@@ -278,6 +278,7 @@ async def run_proactive_impl(
                 topic_history=topic_history,
                 cfg=bridge.cfg,
                 decision_mode=decision_enabled,
+                include_intro=False,  # 人设走 system instructions
             )
             thread_id = bridge.store.get_persona_thread(user_id)
             reply, new_thread_id = await run_with_policy(
@@ -285,6 +286,7 @@ async def run_proactive_impl(
                 prompt,
                 thread_id,
                 resolve_policy(bridge.cfg, "casual"),
+                persona=True,
             )
             if decision_enabled and _reject_proactive_reply(reply):
                 mark_proactive_skipped(state, now, source, slot=slot)
@@ -309,7 +311,7 @@ async def run_proactive_impl(
             await send_reply(
                 bridge,
                 user_id,
-                sanitize_persona_reply(clean_reply),
+                sanitize_persona_reply(clean_reply, bridge.cfg),
                 persona_mode=True,
                 task_mode=False,
             )

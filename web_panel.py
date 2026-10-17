@@ -12,8 +12,10 @@ Web 和 QQ 共用同一套命令与处理管线：`POST /api/chat` 走 `bridge.p
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +29,7 @@ from pydantic import BaseModel
 
 from calendar_todos import normalize_todo_text
 from scheduler import add_reminder_from_text
+from targets import group_member_key, parse_group_member_key
 
 _BEARER = HTTPBearer(auto_error=False)
 
@@ -75,6 +78,14 @@ class IdScopeIn(BaseModel):
     id: int
     scope: str = ""
     user_id: str = ""
+
+
+class ContextClearIn(BaseModel):
+    key: str
+
+
+class ContextGroupClearIn(BaseModel):
+    group_id: str
 
 
 def _kind_of(key: str) -> str:
@@ -223,6 +234,229 @@ class WebPanel:
     def _resolve(self, scope: str, legacy: str = "") -> str:
         """`scope` 为主，`user_id` 作为废弃别名兜底。"""
         return self._owner(scope or legacy)
+
+    # ---- 上下文 ----
+
+    def _session_store(self) -> Any:
+        return getattr(self.bridge, "store", None)
+
+    def _context_meta(self, key: str) -> dict[str, Any]:
+        """会话键 → 线程信息；读不到就当作没有上下文。"""
+        store = self._session_store()
+        thread = ""
+        turns = 0
+        started = None
+        if store is not None:
+            try:
+                thread = str(store.get_persona_thread(key) or "")
+                if thread:
+                    turns = int(store.get_persona_turns(key) or 0)
+                    started = store.get_persona_started_ts(key)
+            except Exception:
+                thread, turns, started = "", 0, None
+        return {
+            "key": key,
+            "thread_id": thread,
+            "has_context": bool(thread),
+            "turns": turns,
+            "started_ts": started,
+        }
+
+    def _context_entries(self) -> dict[str, Any]:
+        """按私聊 / 群成员 / Web 分组列出所有上下文。
+
+        群成员来自 `state_db.group_members`（只有真正触发过回复的成员才有上下文），
+        另把旧版的整群共享键 `g:<群号>` 作为「旧会话」保留，便于清理。
+        """
+        private: list[dict[str, Any]] = []
+        web: list[dict[str, Any]] = []
+        for item in self._scope_list():
+            key = item["key"]
+            if item["kind"] == "web":
+                entry = self._context_meta(key)
+                entry.update({"label": item["label"], "kind": "web"})
+                web.append(entry)
+            elif item["kind"] in ("qq", "other"):
+                entry = self._context_meta(key)
+                entry.update({"label": item["label"], "kind": item["kind"]})
+                private.append(entry)
+
+        groups: dict[str, list[dict[str, Any]]] = {}
+        state_db = getattr(self.bridge, "state_db", None)
+        if state_db is not None:
+            try:
+                rows = state_db.list_group_members()
+            except Exception:
+                rows = []
+            for row in rows:
+                group_id = str(row.get("group_id") or "")
+                user_id = str(row.get("user_id") or "")
+                if not group_id or not user_id:
+                    continue
+                key = group_member_key(group_id, user_id)
+                entry = self._context_meta(key)
+                nickname = str(row.get("nickname") or "")
+                entry.update(
+                    {
+                        "group_id": group_id,
+                        "user_id": user_id,
+                        "nickname": nickname,
+                        "label": f"{user_id}" + (f" · {nickname}" if nickname else ""),
+                        "last_seen_ts": float(row.get("last_seen_ts") or 0),
+                        "message_count": int(row.get("message_count") or 0),
+                    }
+                )
+                groups.setdefault(group_id, []).append(entry)
+
+        # 会话存储里存在、但成员表没登记的键（旧数据或登记失败）
+        store = self._session_store()
+        if store is not None:
+            try:
+                keys = store.list_keys()
+            except Exception:
+                keys = []
+            for key in keys:
+                parsed = parse_group_member_key(key)
+                if parsed:
+                    group_id, user_id = parsed
+                    if any(item["key"] == key for item in groups.get(group_id, [])):
+                        continue
+                    entry = self._context_meta(key)
+                    entry.update(
+                        {
+                            "group_id": group_id,
+                            "user_id": user_id,
+                            "nickname": "",
+                            "label": user_id,
+                            "last_seen_ts": 0.0,
+                            "message_count": 0,
+                        }
+                    )
+                    groups.setdefault(group_id, []).append(entry)
+                elif str(key).startswith("g:"):
+                    group_id = str(key)[2:]
+                    entry = self._context_meta(key)
+                    entry.update(
+                        {
+                            "group_id": group_id,
+                            "user_id": "",
+                            "nickname": "",
+                            "label": "整群共享（旧会话）",
+                            "last_seen_ts": 0.0,
+                            "message_count": 0,
+                            "legacy": True,
+                        }
+                    )
+                    groups.setdefault(group_id, []).append(entry)
+
+        group_list: list[dict[str, Any]] = []
+        for group_id, members in groups.items():
+            members.sort(key=lambda item: (-item.get("last_seen_ts", 0), item["key"]))
+            group_list.append(
+                {
+                    "group_id": group_id,
+                    "label": f"群 {group_id}",
+                    "members": members,
+                    "contexts": sum(1 for item in members if item["has_context"]),
+                }
+            )
+        group_list.sort(key=lambda item: item["group_id"])
+        private.sort(key=lambda item: item["key"])
+        web.sort(key=lambda item: item["key"])
+        return {
+            "groups": group_list,
+            "private": private,
+            "web": web,
+            "total": len(private) + len(web) + sum(len(g["members"]) for g in group_list),
+        }
+
+    def _context_map(self) -> dict[str, dict[str, Any]]:
+        mapped: dict[str, dict[str, Any]] = {}
+        data = self._context_entries()
+        for item in data["private"] + data["web"]:
+            mapped[item["key"]] = item
+        for group in data["groups"]:
+            for item in group["members"]:
+                mapped[item["key"]] = item
+        return mapped
+
+    def _history_path(self) -> Path:
+        raw = str(self.bridge.cfg.get("memory_db") or "memory.db")
+        path = Path(raw)
+        if path.is_absolute():
+            return path
+        base = str(self.bridge.cfg.get("data_dir") or "")
+        if base:
+            return Path(base) / path
+        return Path(__file__).resolve().parent / path
+
+    @staticmethod
+    def _display_user_text(content: str) -> str:
+        """会话历史里存的是整段提示词，只取真正的用户消息部分。"""
+        text = str(content or "")
+        marker = "用户消息："
+        index = text.rfind(marker)
+        if index >= 0:
+            text = text[index + len(marker) :]
+        for stop in ("\n\n【群聊场景】", "\n长期记忆", "\n语音规则"):
+            cut = text.find(stop)
+            if cut >= 0:
+                text = text[:cut]
+        return text.strip()
+
+    def _read_context_messages(self, thread_id: str, limit: int = 60) -> list[dict[str, Any]]:
+        """从 agno 的 SQLite 里读出某个线程的 user/assistant 消息。"""
+        if not thread_id:
+            return []
+        path = self._history_path()
+        if not path.exists():
+            return []
+        rows: list[Any] = []
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(
+                    "SELECT run_index, created_at, run_data FROM agno_runs"
+                    " WHERE session_id = ? ORDER BY run_index",
+                    (thread_id,),
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            logging.warning("读取上下文历史失败：%s", exc)
+            return []
+
+        messages: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                data = json.loads(row["run_data"] or "{}")
+            except (TypeError, ValueError):
+                continue
+            for msg in data.get("messages") or []:
+                role = str(msg.get("role") or "")
+                if role not in ("user", "assistant"):
+                    continue
+                content = str(msg.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "user":
+                    content = self._display_user_text(content)
+                if not content:
+                    continue
+                messages.append({"role": role, "content": content, "ts": row["created_at"]})
+        # 某些版本会把历史重复写进每个 run，去掉相邻重复
+        deduped: list[dict[str, Any]] = []
+        for msg in messages:
+            if (
+                deduped
+                and deduped[-1]["role"] == msg["role"]
+                and deduped[-1]["content"] == msg["content"]
+            ):
+                continue
+            deduped.append(msg)
+        limit = max(1, min(int(limit), 200))
+        return deduped[-limit:]
 
     # ---- 日志 ----
 
@@ -385,12 +619,92 @@ class WebPanel:
                 "tasks_running": running,
                 "tasks_queued": queued,
                 "scopes": len(self._scope_list()),
+                "contexts": len(self._context_map()),
                 "server_time": datetime.now().isoformat(timespec="seconds"),
             }
 
         @app.get("/api/scopes", dependencies=[Depends(self._require_auth)])
         async def api_scopes() -> dict[str, Any]:
             return {"scopes": self._scope_list(), "default": self._default_scope()}
+
+        # ---- 上下文 ----
+
+        @app.get("/api/contexts", dependencies=[Depends(self._require_auth)])
+        async def api_contexts() -> dict[str, Any]:
+            return self._context_entries()
+
+        @app.get("/api/contexts/messages", dependencies=[Depends(self._require_auth)])
+        async def api_context_messages(key: str = "", limit: int = 60) -> dict[str, Any]:
+            entry = self._context_map().get(str(key or ""))
+            if entry is None:
+                raise HTTPException(status_code=403, detail="未知上下文")
+            thread_id = str(entry.get("thread_id") or "")
+            return {
+                "key": entry["key"],
+                "label": entry.get("label") or entry["key"],
+                "thread_id": thread_id,
+                "has_context": bool(thread_id),
+                "turns": entry.get("turns", 0),
+                "messages": self._read_context_messages(thread_id, limit),
+            }
+
+        @app.post("/api/contexts/clear", dependencies=[Depends(self._require_auth)])
+        async def api_context_clear(body: ContextClearIn) -> dict[str, Any]:
+            key = str(body.key or "").strip()
+            if key not in self._context_map():
+                raise HTTPException(status_code=403, detail="未知上下文")
+            store = self._session_store()
+            if store is None:
+                return {
+                    "ok": False,
+                    "reason": "no_store",
+                    "message": "当前没有会话存储，无法清除",
+                }
+            try:
+                cleared = bool(store.reset_persona(key))
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"清除失败：{exc}") from exc
+            self._invalidate_scopes()
+            return {
+                "ok": True,
+                "key": key,
+                "cleared": cleared,
+                "message": "已清除该上下文" if cleared else "该上下文没有可清除的历史",
+            }
+
+        @app.post("/api/contexts/clear_group", dependencies=[Depends(self._require_auth)])
+        async def api_context_clear_group(body: ContextGroupClearIn) -> dict[str, Any]:
+            group_id = str(body.group_id or "").strip()
+            entries = self._context_map()
+            keys = [
+                key
+                for key, item in entries.items()
+                if str(item.get("group_id") or "") == group_id
+            ]
+            if not keys:
+                raise HTTPException(status_code=404, detail="没有这个群的上下文")
+            store = self._session_store()
+            if store is None:
+                return {
+                    "ok": False,
+                    "reason": "no_store",
+                    "message": "当前没有会话存储，无法清除",
+                }
+            cleared = 0
+            for key in keys:
+                try:
+                    if store.reset_persona(key):
+                        cleared += 1
+                except Exception:
+                    logging.warning("清除上下文失败：%s", key, exc_info=True)
+            self._invalidate_scopes()
+            return {
+                "ok": True,
+                "group_id": group_id,
+                "cleared": cleared,
+                "total": len(keys),
+                "message": f"已清除 {cleared}/{len(keys)} 个成员的上下文",
+            }
 
         # ---- 提醒 ----
 

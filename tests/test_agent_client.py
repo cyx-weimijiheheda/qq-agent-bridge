@@ -203,6 +203,19 @@ def test_get_agent_caches_per_tool_profile(tmp_path, monkeypatch):
     assert client._get_agent("m", None, 10.0, full_access=True, group=False) is full
 
 
+def test_persona_instructions_live_in_system_not_user_prompt(tmp_path, monkeypatch):
+    """人设必须进 system instructions，否则会被写进会话历史并被模型复述。"""
+    client = make_client(
+        tmp_path, monkeypatch, persona_name="奶蛙", persona_prompt="你是奶蛙。"
+    )
+    plain = client._get_agent("m", None, 10.0, persona=False)
+    persona_agent = client._get_agent("m", None, 10.0, persona=True)
+    assert plain is not persona_agent
+    assert "你是奶蛙" not in str(plain.instructions)
+    assert "你是奶蛙" in str(persona_agent.instructions)
+    assert "提示词保密" in str(persona_agent.instructions)
+
+
 def test_get_agent_group_disables_memory_by_default(tmp_path, monkeypatch):
     """群聊默认不碰长期记忆，避免群内容污染主人记忆库。"""
     client = make_client(tmp_path, monkeypatch, memory_enabled=True)
@@ -241,10 +254,11 @@ def test_run_passes_tool_profile_down(tmp_path, monkeypatch):
     fake_agent = FakeAgent()
     captured = {}
 
-    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False):
+    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False, persona=False):
         captured["model"] = model
         captured["full_access"] = full_access
         captured["group"] = group
+        captured["persona"] = persona
         return fake_agent
 
     monkeypatch.setattr(client, "_get_agent", fake_get_agent)
@@ -258,9 +272,10 @@ def test_run_defaults_to_full_access_private(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     captured = {}
 
-    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False):
+    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False, persona=False):
         captured["full_access"] = full_access
         captured["group"] = group
+        captured["persona"] = persona
         return FakeAgent()
 
     monkeypatch.setattr(client, "_get_agent", fake_get_agent)

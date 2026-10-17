@@ -393,6 +393,7 @@ class Bridge:
         bypass_proxy: bool = False,
         full_access: bool = True,
         group: bool = False,
+        persona: bool = False,
     ) -> tuple[str, str | None]:
         kwargs: dict[str, Any] = {
             "reasoning_effort": reasoning_effort,
@@ -400,6 +401,7 @@ class Bridge:
             "image_paths": image_paths,
             "full_access": full_access,
             "group": group,
+            "persona": persona,
         }
         if model is not None:
             kwargs["model"] = model

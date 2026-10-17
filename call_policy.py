@@ -61,6 +61,7 @@ async def run_with_policy(
     bypass_proxy: bool = False,
     full_access: bool = True,
     group: bool = False,
+    persona: bool = False,
 ) -> tuple[str, str | None]:
     """统一入口：按策略调用桥接的 Codex 重试封装。
 
@@ -78,4 +79,5 @@ async def run_with_policy(
         bypass_proxy=bypass_proxy,
         full_access=full_access,
         group=group,
+        persona=persona,
     )

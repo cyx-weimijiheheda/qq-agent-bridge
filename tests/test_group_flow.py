@@ -51,7 +51,7 @@ def _mention(text=""):
     return segments
 
 
-def run_flow(events, *, expected=1, wait=6.0, **cfg_overrides):
+def run_flow(events, *, expected=1, wait=6.0, inspect=None, **cfg_overrides):
     """喂事件给桥接，收集发往群/私聊的消息参数。
 
     expected=0 表示「预期一条回复都没有」，此时会等满 wait 秒再断言，
@@ -103,6 +103,8 @@ def run_flow(events, *, expected=1, wait=6.0, **cfg_overrides):
                     if len(group_msgs) + len(private_msgs) >= expected:
                         break
                     await asyncio.sleep(0.1)
+                if inspect is not None:
+                    inspect(store, bridge)
                 task.cancel()
                 try:
                     await task
@@ -122,6 +124,26 @@ def test_mentioned_group_message_gets_group_reply():
     assert len(group) == 1
     assert group[0]["group_id"] == GROUP_ID
     assert "假的 Codex 回复" in group[0]["message"]
+
+
+def test_group_context_is_per_member():
+    """群聊上下文按成员隔离：写入 g:<群号>:<QQ号>，不再碰整群键。"""
+    seen: dict = {}
+
+    def inspect(store, bridge):
+        seen["keys"] = store.list_keys()
+        seen["thread"] = store.get_persona_thread(f"g:{GROUP_ID}:10001")
+        # 整群键可能因活动记录而存在，但绝不能持有会话线程
+        seen["group_thread"] = store.get_persona_thread(f"g:{GROUP_ID}")
+        seen["member"] = bridge.state_db.get_group_member(str(GROUP_ID), "10001")
+
+    run_flow([_group_event(_mention("你好"))], inspect=inspect)
+    assert seen["thread"]
+    assert f"g:{GROUP_ID}:10001" in seen["keys"]
+    assert seen["group_thread"] is None
+    assert seen["member"] is not None
+    assert seen["member"]["nickname"] == "小明"
+    assert seen["member"]["message_count"] >= 1
 
 
 def test_group_message_without_mention_is_ignored():

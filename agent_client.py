@@ -26,6 +26,7 @@ from agno.media import Image
 from agno.memory import MemoryManager
 from agno.models.openai import OpenAIChat
 
+from message_utils import persona_system_prompt
 from vision_client import BROWSER_UA
 
 # 所有外联都按“直连优先”设计。部分 HTTP 客户端会读取系统代理，
@@ -437,8 +438,9 @@ class AgentClient:
         *,
         full_access: bool = True,
         group: bool = False,
+        persona: bool = False,
     ) -> Agent:
-        key = (model, reasoning_effort or "", timeout, full_access, group)
+        key = (model, reasoning_effort or "", timeout, full_access, group, persona)
         agent = self._agents.get(key)
         if agent is not None:
             return agent
@@ -459,7 +461,13 @@ class AgentClient:
             add_history_to_context=True,
             num_history_runs=int(self.cfg.get("history_turns", 20)),
             tools=self._build_tools(full_access),
-            instructions=TOOL_SAFETY_INSTRUCTIONS,
+            # 人设放 system instructions：agno 会把 user prompt 写进会话历史，
+            # 整套人设若每轮都塞进 user prompt，下一轮就会在“对话”里看见提示词。
+            instructions=(
+                TOOL_SAFETY_INSTRUCTIONS + "\n\n" + persona_system_prompt(self.cfg)
+                if persona
+                else TOOL_SAFETY_INSTRUCTIONS
+            ),
             markdown=False,
         )
         self._agents[key] = agent
@@ -479,6 +487,7 @@ class AgentClient:
         bypass_proxy: bool = False,
         full_access: bool = True,
         group: bool = False,
+        persona: bool = False,
     ) -> tuple[str, str | None]:
         del model_provider  # 服务商由 api_base_url 决定，参数保留仅为接口兼容
         del bypass_proxy  # 内置 HTTP 客户端默认不信任代理环境变量
@@ -494,6 +503,7 @@ class AgentClient:
             effective_timeout,
             full_access=full_access,
             group=group,
+            persona=persona,
         )
         images = [Image(filepath=str(p)) for p in (image_paths or [])]
         # 每个会话一个稳定的 x-opencode-session：同一 thread 的多次请求用同一 ID

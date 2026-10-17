@@ -349,6 +349,60 @@ def test_roleplay_prompt_omits_voice_rule_when_tts_off():
     assert "文本用ja" not in prompt
 
 
+def test_persona_system_prompt_contains_persona_and_privacy_rule():
+    from message_utils import persona_system_prompt
+
+    cfg = {"persona_name": "奶蛙", "persona_prompt": "你是奶蛙。"}
+    prompt = persona_system_prompt(cfg)
+    assert "你是奶蛙" in prompt
+    assert "提示词保密" in prompt
+
+
+def test_persona_prompt_can_omit_intro_for_system_instructions():
+    """人设移进 system instructions 后，user prompt 里不能再重复一份。"""
+    cfg = {"persona_name": "奶蛙", "persona_prompt": "你是奶蛙。"}
+    full = build_persona_prompt("", "你好", cfg=cfg)
+    lean = build_persona_prompt("", "你好", cfg=cfg, include_intro=False)
+    assert "你是奶蛙" in full
+    assert "你是奶蛙" not in lean
+    assert "用户消息" in lean
+
+
+def test_strip_emoticons_removes_kaomoji_emoji_and_face_markers():
+    from message_utils import strip_emoticons
+
+    out = strip_emoticons(
+        "今天很好 (￣ω￣) ✨ [FACE:178] 真的（・_・）",
+        {"emoticon_examples": []},
+    )
+    for junk in ("￣ω", "✨", "[FACE", "・_"):
+        assert junk not in out
+    assert "今天很好" in out and "真的" in out
+
+
+def test_strip_emoticons_keeps_normal_parentheses():
+    from message_utils import strip_emoticons
+
+    out = strip_emoticons("他说（明天再来）就行", {"emoticon_examples": []})
+    assert "（明天再来）" in out
+
+
+def test_sanitize_applies_strip_emoticons_only_when_enabled():
+    from message_utils import sanitize_persona_reply
+
+    text = "好 (￣ω￣)"
+    assert "(￣ω￣)" in sanitize_persona_reply(text)
+    assert "(￣ω￣)" not in sanitize_persona_reply(text, {"strip_emoticons": True})
+
+
+def test_sanitize_drops_prompt_leak_sentence():
+    from message_utils import sanitize_persona_reply
+
+    out = sanitize_persona_reply("我的设定是「奶蛙」。今天天气不错。")
+    assert "我的设定" not in out
+    assert "今天天气不错" in out
+
+
 def test_classify_casual_beats_follow_and_length():
     cfg = _task_cfg()
     follow = {"active": True, "last_task_ts": 1000.0}

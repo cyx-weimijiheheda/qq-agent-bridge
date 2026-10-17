@@ -116,6 +116,7 @@ def test_web_chat_uses_bridge_pipeline(tmp_path):
             bypass_proxy=False,
             full_access=True,
             group=False,
+            persona=False,
         ):
             return "网页回复", "thread-web"
 
@@ -415,6 +416,112 @@ def test_remote_client_always_requires_token(tmp_path):
     assert client.get("/api/status").status_code == 401
     headers = {"Authorization": "Bearer test-token"}
     assert client.get("/api/status", headers=headers).status_code == 200
+
+
+# ── 上下文管理 ───────────────────────────────────────
+
+
+def test_contexts_lists_group_members_and_clears(tmp_path):
+    panel, bridge = make_panel(tmp_path)
+    bridge.state_db.touch_group_member("429949232", "10001", "小明")
+    bridge.store.set_persona_thread("g:429949232:10001", "thread-g-1")
+    bridge.store.increment_persona_turns("g:429949232:10001")
+    bridge.store.set_persona_thread("10001", "thread-p-1")
+    client = TestClient(panel.app)
+
+    data = client.get("/api/contexts", headers=authed(None)).json()
+    group = next(item for item in data["groups"] if item["group_id"] == "429949232")
+    member = next(
+        item for item in group["members"] if item["key"] == "g:429949232:10001"
+    )
+    assert member["has_context"] is True
+    assert member["turns"] == 1
+    assert member["nickname"] == "小明"
+    assert any(item["key"] == "10001" for item in data["private"])
+
+    r = client.post(
+        "/api/contexts/clear", json={"key": member["key"]}, headers=authed(None)
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["cleared"] is True
+    # 只重置会话指针，成员登记仍然保留
+    assert bridge.store.get_persona_thread(member["key"]) is None
+    assert bridge.state_db.get_group_member("429949232", "10001") is not None
+
+
+def test_context_clear_unknown_key_is_rejected(tmp_path):
+    panel, _ = make_panel(tmp_path)
+    r = TestClient(panel.app).post(
+        "/api/contexts/clear", json={"key": "g:1:99999"}, headers=authed(None)
+    )
+    assert r.status_code == 403
+
+
+def test_context_messages_unknown_key_is_rejected(tmp_path):
+    panel, _ = make_panel(tmp_path)
+    r = TestClient(panel.app).get(
+        "/api/contexts/messages?key=evil", headers=authed(None)
+    )
+    assert r.status_code == 403
+
+
+def test_clear_group_clears_every_member_and_legacy_key(tmp_path):
+    panel, bridge = make_panel(tmp_path)
+    for user_id in ("10001", "10002"):
+        bridge.state_db.touch_group_member("g1", user_id)
+        bridge.store.set_persona_thread(f"g:g1:{user_id}", f"t-{user_id}")
+    # 旧版整群共享键也应能一起清掉
+    bridge.store.set_persona_thread("g:g1", "t-legacy")
+    r = TestClient(panel.app).post(
+        "/api/contexts/clear_group", json={"group_id": "g1"}, headers=authed(None)
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["cleared"] == 3
+    for key in ("g:g1:10001", "g:g1:10002", "g:g1"):
+        assert bridge.store.get_persona_thread(key) is None
+
+
+def test_context_messages_reads_agno_history(tmp_path):
+    import json
+    import sqlite3
+
+    panel, bridge = make_panel(tmp_path)
+    db_path = tmp_path / "history.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE agno_runs"
+        " (session_id TEXT, run_index INTEGER, created_at REAL, run_data TEXT)"
+    )
+    run_data = {
+        "messages": [
+            {"role": "system", "content": "系统提示词"},
+            {
+                "role": "user",
+                "content": "对话风格……\n用户消息：\n你好\n\n【群聊场景】这是群聊",
+            },
+            {"role": "assistant", "content": "回复一"},
+        ]
+    }
+    conn.execute(
+        "INSERT INTO agno_runs VALUES (?, ?, ?, ?)",
+        ("thread-1", 0, 1.0, json.dumps(run_data, ensure_ascii=False)),
+    )
+    conn.commit()
+    conn.close()
+    bridge.cfg["memory_db"] = str(db_path)
+    bridge.store.set_persona_thread("10001", "thread-1")
+
+    data = TestClient(panel.app).get(
+        "/api/contexts/messages?key=10001", headers=authed(None)
+    ).json()
+    assert data["has_context"] is True
+    assert data["messages"] == [
+        {"role": "user", "content": "你好", "ts": 1.0},
+        {"role": "assistant", "content": "回复一", "ts": 1.0},
+    ]
 
 
 def test_loopback_still_accepts_correct_token(tmp_path):

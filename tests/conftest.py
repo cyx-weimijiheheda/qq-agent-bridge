@@ -97,6 +97,7 @@ def fake_agent_core_for_bridge_tests(monkeypatch, request):
         bypass_proxy=False,
         full_access=True,
         group=False,
+        persona=False,
     ):
         exit_code = os.environ.get("FAKE_AGENT_EXIT_CODE")
         if exit_code:

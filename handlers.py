@@ -29,6 +29,7 @@ from message_utils import (
 )
 from pdf_utils import extract_pdf_text
 from reply_sender import send_reply
+from targets import group_member_key
 from timetable import format_preview, load_timetable, parse_csv, parse_xlsx, save_timetable
 from video_utils import (
     build_videoshot_from_frames,
@@ -447,6 +448,7 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         casual_multipart=True,
         memory_text="",  # 群聊不注入主人记忆
         cfg=bridge.cfg,
+        include_intro=False,  # 人设走 system instructions，避免写进群会话历史
     )
     prompt += (
         "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
@@ -454,7 +456,19 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         "回复要简短、面向群里所有人，不要用私聊口吻点名某个人。\n"
     )
 
-    thread_id = bridge.store.get_persona_thread(session_key)
+    # 群聊按成员隔离上下文：g:<群号>:<QQ号>。发送目标仍是整群（session_key），
+    # 只有线程查找/写入换成成员键。
+    context_key = session_key
+    if buf.sender_id:
+        context_key = group_member_key(buf.group_id, buf.sender_id)
+        state_db = getattr(bridge, "state_db", None)
+        if state_db is not None:
+            try:
+                state_db.touch_group_member(buf.group_id, buf.sender_id, buf.sender_name)
+            except Exception:
+                logging.warning("记录群成员失败：%s", buf.sender_id, exc_info=True)
+
+    thread_id = bridge.store.get_persona_thread(context_key)
     try:
         reply, new_thread_id = await run_with_policy(
             bridge,
@@ -464,6 +478,7 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             image_paths=image_paths or None,
             full_access=bool(getattr(buf, "full_access", True)),
             group=True,
+            persona=True,
         )
     except AgentError as exc:
         logging.error("群聊模型调用失败：%s", exc)
@@ -471,8 +486,8 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         return
 
     if new_thread_id:
-        bridge.store.set_persona_thread(session_key, new_thread_id)
-    reply = sanitize_persona_reply(reply)
+        bridge.store.set_persona_thread(context_key, new_thread_id)
+    reply = sanitize_persona_reply(reply, bridge.cfg)
     if bridge.cfg.get("group_reply_at", False) and buf.sender_id:
         # @ 必须在文本之前单独发一段，文本里没法表达 at 段
         await bridge._send_private_segments(
@@ -671,6 +686,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 memory_text=bridge._read_memory(),
                 image_suggestions=image_suggestions,
                 cfg=bridge.cfg,
+                include_intro=False,  # 人设走 system instructions
             )
             thread_id = bridge.store.get_persona_thread(user_id)
         else:
@@ -690,6 +706,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 thread_id,
                 resolve_policy(bridge.cfg, "task" if task_mode else "casual"),
                 image_paths=image_paths or None,
+                persona=persona_mode,
             )
         except AgentError as exc:
             fallback_model = str(bridge.cfg.get("fallback_model") or "").strip()
@@ -725,6 +742,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                         casual_multipart=not task_mode,
                         memory_text=bridge._read_memory(),
                         cfg=bridge.cfg,
+                        include_intro=False,
                     )
                 else:
                     fallback_prompt = _build_work_prompt(
@@ -753,6 +771,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                         resolve_policy(bridge.cfg, "task" if task_mode else "casual"),
                         model=fallback_model,
                         bypass_proxy=True,
+                        persona=persona_mode,
                     )
                 except AgentError as fallback_exc:
                     logging.error("兜底模型也失败：%s", fallback_exc)
@@ -788,7 +807,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
         if persona_mode:
             bridge.store.increment_persona_turns(user_id)
         if persona_mode:
-            reply = sanitize_persona_reply(reply)
+            reply = sanitize_persona_reply(reply, bridge.cfg)
         await send_reply(
             bridge,
             user_id,

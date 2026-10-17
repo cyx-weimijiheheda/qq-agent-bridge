@@ -6,6 +6,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from state_db import StateDB
 
 
+def test_group_member_upsert(tmp_path):
+    db = StateDB(tmp_path / "state.db")
+    db.touch_group_member("g1", "u1", "旧名", now=100)
+    db.touch_group_member("g1", "u1", "新名", now=200)
+    row = db.get_group_member("g1", "u1")
+    assert row is not None
+    assert row["message_count"] == 2
+    assert row["nickname"] == "新名"
+    assert row["last_seen_ts"] == 200
+    # 空昵称不能覆盖已有昵称
+    db.touch_group_member("g1", "u1", "", now=300)
+    assert db.get_group_member("g1", "u1")["nickname"] == "新名"
+    assert [m["user_id"] for m in db.list_group_members("g1")] == ["u1"]
+    assert db.list_group_members("other") == []
+    db.close()
+
+
 def test_create_and_list_due_reminders(tmp_path):
     db = StateDB(tmp_path / "state.db")
     rid = db.create_reminder("10001", "喝水", "2026-09-01T09:00:00")

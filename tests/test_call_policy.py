@@ -70,6 +70,7 @@ def test_run_with_policy_delegates(monkeypatch):
                 bypass_proxy=False,
                 full_access=True,
                 group=False,
+                persona=False,
             ):
                 captured["prompt"] = prompt
                 captured["thread_id"] = thread_id

@@ -180,6 +180,26 @@
 
   .empty { padding: 32px 16px; text-align: center; color: var(--muted); font-size: 13px; }
 
+  /* ── 上下文 ───────────────────────────────────────── */
+  .ctx-group {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    position: sticky; top: 0; z-index: 1;
+  }
+  .ctx-group b { font-size: 13px; }
+  .ctx-group .sub { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .ctx-group .btn { margin-left: auto; }
+  .ctxview {
+    flex: 0 0 auto; max-height: 45%; min-height: 160px;
+    display: flex; flex-direction: column; gap: 8px;
+    border: 1px solid var(--line); border-radius: var(--r);
+    background: var(--panel); padding: 10px 12px;
+  }
+  .ctxview[hidden] { display: none; }
+  .ctxview .chatlog { padding: 0; }
+
   /* ── 日志 ─────────────────────────────────────────── */
   .logview {
     flex: 1; min-height: 0; overflow: auto;
@@ -253,6 +273,7 @@
   <button           data-tab="reminders"  role="tab">提醒</button>
   <button           data-tab="todos"      role="tab">待办</button>
   <button           data-tab="tasks"      role="tab">任务</button>
+  <button           data-tab="contexts"   role="tab">上下文</button>
   <button           data-tab="chat"       role="tab">聊天</button>
 </nav>
 
@@ -302,6 +323,22 @@
       <button class="btn" id="kbRebuild" title="重新扫描 rag_dirs 里的文档">重建知识库</button>
     </div>
     <div class="rows" id="taskRows"></div>
+  </section>
+
+  <!-- 上下文 -->
+  <section class="panel" id="panel-contexts">
+    <div class="toolbar">
+      <button class="btn" id="ctxRefresh">刷新</button>
+      <span class="meta" id="ctxMeta"></span>
+    </div>
+    <div class="rows" id="ctxRows"></div>
+    <div class="ctxview" id="ctxView" hidden>
+      <div class="toolbar">
+        <b id="ctxTitle"></b>
+        <button class="btn" id="ctxClose" style="margin-left:auto">关闭</button>
+      </div>
+      <div class="chatlog" id="ctxMessages"></div>
+    </div>
   </section>
 
   <!-- 聊天 -->
@@ -406,6 +443,7 @@ async function refreshStatus() {
       stat("任务", d.tasks_running + " / " + d.tasks_queued,
            d.tasks_queued ? "warn" : null),
       stat("缓冲", d.active_buffers),
+      stat("上下文", d.contexts),
       stat("作用域", d.scopes)
     );
   } catch (err) {
@@ -457,6 +495,7 @@ function switchTab(name) {
   else if (name === "tasks") loadTasks();
   else if (name === "todos") loadTodos();
   else if (name === "reminders") loadReminders();
+  else if (name === "contexts") loadContexts();
 }
 
 /* ── 日志 ───────────────────────────────────────────── */
@@ -756,6 +795,166 @@ for (const box of [$("reminderRows"), $("todoRows"), $("taskRows")]) {
   });
 }
 
+/* ── 上下文 ─────────────────────────────────────────── */
+function fmtTs(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return isNaN(d.getTime()) ? "" : d.toLocaleString("zh-CN", { hour12: false });
+}
+
+function ctxSub(item) {
+  const bits = [];
+  if (item.has_context) {
+    bits.push("线程 " + String(item.thread_id || "").slice(0, 12));
+    bits.push((item.turns || 0) + " 轮");
+  } else {
+    bits.push("无历史");
+  }
+  if (item.message_count) bits.push(item.message_count + " 条消息");
+  const ts = item.last_seen_ts || item.started_ts;
+  if (ts) bits.push("最近 " + fmtTs(ts));
+  return bits.join(" · ");
+}
+
+function ctxRow(item) {
+  const row = document.createElement("div");
+  row.className = "row" + (item.has_context ? "" : " s-cancelled");
+
+  const body = document.createElement("div");
+  body.className = "body";
+  const p = document.createElement("p");
+  p.textContent = item.label;
+  body.append(p);
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = ctxSub(item);
+  body.append(sub);
+
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  const view = document.createElement("button");
+  view.className = "btn";
+  view.textContent = "查看";
+  view.dataset.act = "ctx-view";
+  view.dataset.key = item.key;
+  const clear = document.createElement("button");
+  clear.className = "btn danger";
+  clear.textContent = "清除";
+  clear.dataset.act = "ctx-clear";
+  clear.dataset.key = item.key;
+  clear.dataset.label = item.label;
+  clear.disabled = !item.has_context;
+  acts.append(view, clear);
+
+  row.append(body, acts);
+  return row;
+}
+
+function ctxSection(title, sub) {
+  const div = document.createElement("div");
+  div.className = "ctx-group";
+  const b = document.createElement("b");
+  b.textContent = title;
+  div.append(b);
+  if (sub) {
+    const s = document.createElement("span");
+    s.className = "sub";
+    s.textContent = sub;
+    div.append(s);
+  }
+  return div;
+}
+
+function ctxGroupHeader(group) {
+  const div = ctxSection(
+    "群 " + group.group_id,
+    group.members.length + " 个成员 · " + group.contexts + " 个有上下文"
+  );
+  const btn = document.createElement("button");
+  btn.className = "btn danger";
+  btn.textContent = "清空本群";
+  btn.dataset.act = "ctx-clear-group";
+  btn.dataset.group = group.group_id;
+  div.append(btn);
+  return div;
+}
+
+async function loadContexts() {
+  const box = $("ctxRows");
+  let d;
+  try { d = await api("/api/contexts"); }
+  catch (err) { box.replaceChildren(emptyRow(err.message)); return; }
+  box.replaceChildren();
+  $("ctxMeta").textContent = "共 " + d.total + " 个上下文";
+  if (!d.total) { box.replaceChildren(emptyRow("还没有任何上下文。")); return; }
+
+  if (d.private.length) {
+    box.append(ctxSection("私聊"));
+    for (const item of d.private) box.append(ctxRow(item));
+  }
+  for (const group of d.groups) {
+    box.append(ctxGroupHeader(group));
+    for (const item of group.members) box.append(ctxRow(item));
+  }
+  if (d.web.length) {
+    box.append(ctxSection("Web 会话", "与 QQ 相互独立"));
+    for (const item of d.web) box.append(ctxRow(item));
+  }
+}
+
+function addCtxBubble(log, text, kind) {
+  const div = document.createElement("div");
+  div.className = "bubble " + kind;
+  div.textContent = text;
+  log.append(div);
+}
+
+async function viewContext(key) {
+  let d;
+  try {
+    d = await api("/api/contexts/messages?key=" + encodeURIComponent(key) + "&limit=60");
+  } catch (err) { toast(err.message, "bad"); return; }
+  $("ctxTitle").textContent = d.label + (d.thread_id ? " · " + d.thread_id.slice(0, 12) : "");
+  const log = $("ctxMessages");
+  log.replaceChildren();
+  if (!d.has_context) {
+    log.append(emptyRow("这个上下文还没有历史。"));
+  } else if (!d.messages.length) {
+    log.append(emptyRow("会话存在，但历史库里没有可读消息。"));
+  } else {
+    for (const m of d.messages) {
+      addCtxBubble(log, m.content, m.role === "user" ? "me" : "bot");
+    }
+  }
+  $("ctxView").hidden = false;
+  log.scrollTop = log.scrollHeight;
+}
+
+async function clearContext(key, label) {
+  if (!confirm("清除「" + label + "」的对话上下文？\n长期记忆（memory.md）不会被删除。")) return;
+  try {
+    const d = await api("/api/contexts/clear", { method: "POST", body: { key } });
+    toast(d.message || "已清除", d.ok === false ? "bad" : "good");
+    $("ctxView").hidden = true;
+    await loadContexts();
+    loadScopes();
+  } catch (err) { toast(err.message, "bad"); }
+}
+
+async function clearGroupContext(groupId) {
+  if (!confirm("清空群 " + groupId + " 里所有成员的上下文？\n长期记忆不会被删除，只重置会话。")) return;
+  try {
+    const d = await api("/api/contexts/clear_group", {
+      method: "POST",
+      body: { group_id: groupId },
+    });
+    toast(d.message || "已清除", d.ok === false ? "bad" : "good");
+    $("ctxView").hidden = true;
+    await loadContexts();
+    loadScopes();
+  } catch (err) { toast(err.message, "bad"); }
+}
+
 /* ── 聊天 ───────────────────────────────────────────── */
 function addBubble(text, kind) {
   const div = document.createElement("div");
@@ -826,6 +1025,18 @@ $("todoText").addEventListener("keydown", (e) => { if (e.key === "Enter") addTod
 $("taskAdd").addEventListener("click", addTask);
 $("taskText").addEventListener("keydown", (e) => { if (e.key === "Enter") addTask(); });
 $("kbRebuild").addEventListener("click", rebuildKnowledge);
+
+$("ctxRefresh").addEventListener("click", loadContexts);
+$("ctxClose").addEventListener("click", () => { $("ctxView").hidden = true; });
+$("ctxRows").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn || btn.disabled) return;
+  const act = btn.dataset.act;
+  if (act === "ctx-view") viewContext(btn.dataset.key);
+  else if (act === "ctx-clear") clearContext(btn.dataset.key, btn.dataset.label);
+  else if (act === "ctx-clear-group") clearGroupContext(btn.dataset.group);
+});
+
 $("chatSend").addEventListener("click", sendChat);
 $("chatInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }

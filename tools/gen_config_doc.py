@@ -128,7 +128,8 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         "内置提示词不满意就直接覆盖掉。",
         [
             "chat_style_guide", "media_frequency_guide", "media_marker_guide",
-            "proactive_topic_guide", "emoticon_examples", "extra_skill_triggers",
+            "proactive_topic_guide", "emoticon_examples", "strip_emoticons",
+            "extra_skill_triggers",
         ],
     ),
     (
@@ -335,7 +336,8 @@ DESCRIPTIONS: dict[str, str] = {
     "media_frequency_guide": "覆盖内置的「表情/语音使用频率」提示词",
     "media_marker_guide": "覆盖内置的「媒体标记」说明（高级用法）",
     "proactive_topic_guide": "覆盖内置的「主动话题规则」提示词",
-    "emoticon_examples": "颜文字示例，会写进提示词",
+    "emoticon_examples": "颜文字示例，会写进提示词；设为 `[]` 表示不提供示例",
+    "strip_emoticons": "发送前删除颜文字、emoji 与 QQ 表情标记（提示词约束失效时的兜底）",
     "extra_skill_triggers": "自定义技能触发：命中关键词时提示模型先读某个技能，例如 `[{\「keywords\」: [\「报销\」], \「skill\」: \「my-finance\」}]`",
     # 主动消息
     "proactive_enabled": "主动消息总开关（默认关闭）",

@@ -105,6 +105,8 @@ DEFAULTS: dict[str, Any] = {
     "media_marker_guide": "",
     "proactive_topic_guide": "",
     "emoticon_examples": ["(・_・)", "(￣▽￣)", "(._.)", "(￣ω￣)", "(。-ω-)zzz"],
+    # 发送前确定性地删掉颜文字、emoji 与 [FACE:...]/[MFACE:...] 标记
+    "strip_emoticons": False,
     # 想让模型用某个"找图"工具时填工具名（需自己在 agent_client 里注册）；留空则不提示
     "image_search_tool": "",
     # 自定义技能触发：命中关键词时在提示词里追加技能提示
