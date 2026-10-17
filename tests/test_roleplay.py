@@ -119,6 +119,16 @@ def test_split_persona_reply_single_long():
     assert all(len(s) <= 20 for s in segments)
 
 
+def test_split_persona_reply_single_segment_keeps_whole_reply():
+    """max_segments=1 时要整段合成一条，不能截成第一段。"""
+    reply = "第一段。\n---\n第二段。\n---\n第三段。"
+    segments = split_persona_reply(reply, max_segments=1)
+    assert len(segments) == 1
+    for part in ("第一段", "第二段", "第三段"):
+        assert part in segments[0]
+    assert "---" not in segments[0]
+
+
 def test_split_persona_reply_drops_skill_loading_and_decision_meta():
     reply = (
         "技能已加载（SKILL.md 与资源文件在会话内仍有效）。当前 09:00 周三早晨，"

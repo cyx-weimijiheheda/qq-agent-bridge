@@ -456,10 +456,15 @@ def _skill_trigger_hint(text: str, cfg: dict[str, Any]) -> str:
 
 
 def _voice_rule(cfg: dict[str, Any]) -> str:
+    # TTS 没开时这条规则只会添乱：它曾把 tts_language（默认 "ja"）写成「文本用ja」，
+    # 等于告诉模型正文用日语。没配语音就不必提。
+    backend = str(cfg.get("tts_backend") or "off").strip().lower()
+    if backend in ("", "off", "none"):
+        return ""
     language = str(cfg.get("tts_language") or "").strip() or "默认语言"
     limit = cfg.get("voice_max_chars", 120)
     return (
-        f"\n语音规则：语音标记只在 TTS 已配置时使用，文本用{language}，"
+        f"\n语音规则：语音标记只在 TTS 已配置时使用，语音使用{language}，"
         f"一条回复最多 {cfg.get('voice_max_per_reply', 1)} 个 [VOICE:...]（≤{limit} 字），"
         "不要用语音打断任务回复。\n"
     )
@@ -686,6 +691,12 @@ def split_persona_reply(reply: str, max_chars: int = 40, max_segments: int = 4) 
     reply = sanitize_persona_reply(reply)
     if not reply:
         return []
+    if max_segments <= 1:
+        # 单条模式：模型仍可能用 --- 分段，这里把分隔并回一段。
+        # 不能走下面的 [:max_segments]，否则整条回答会被截成第一段。
+        merged = re.sub(r"\n?(?:-{2,}|—+)\n?", "\n", reply)
+        merged = re.sub(r"\n{3,}", "\n\n", merged).strip()
+        return [merged] if merged else []
     if "---" in reply:
         parts = re.split(r"\n?---\n?", reply)
         return [p.strip() for p in parts if p.strip()][:max_segments]

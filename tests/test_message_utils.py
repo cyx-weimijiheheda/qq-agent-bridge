@@ -337,9 +337,16 @@ def test_media_marker_guide_mentions_voice():
 
 
 def test_roleplay_prompt_mentions_voice_rule():
-    prompt = build_persona_prompt("test-persona", "你好")
+    prompt = build_persona_prompt("test-persona", "你好", cfg={"tts_backend": "local"})
     assert "[VOICE:" in prompt
     assert "语音规则" in prompt
+
+
+def test_roleplay_prompt_omits_voice_rule_when_tts_off():
+    """TTS 没开时不提语音规则 —— 否则会写进「文本用ja」这类干扰项。"""
+    prompt = build_persona_prompt("test-persona", "你好", cfg={"tts_backend": "off"})
+    assert "语音规则" not in prompt
+    assert "文本用ja" not in prompt
 
 
 def test_classify_casual_beats_follow_and_length():

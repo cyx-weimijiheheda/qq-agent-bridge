@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -84,6 +85,8 @@ DEFAULTS: dict[str, Any] = {
     # ---------- 人格设定（留空 = 普通中文助手）----------
     "persona_name": "",  # 助手自称，例如“小助手”
     "persona_prompt": "",  # 人设描述，例如“说话简短、先给结论”
+    # 人设写长文档时放在这个文件里，启动时读入 persona_prompt（persona_prompt 非空则优先）
+    "persona_prompt_file": "",
     "persona_skill_home": "~/.agents/skills",  # 技能目录根，persona_skill 从这里找
     "persona_enabled": True,  # 是否启用"人格模式"
     "persona_skill": "",  # 填技能名则提示模型先读 <persona_skill_home>/<技能>/SKILL.md
@@ -258,6 +261,8 @@ DEFAULTS: dict[str, Any] = {
     "web_host": "127.0.0.1",
     "web_port": 8080,
     "web_token": "",
+    # 来自本机回环地址的请求免 token（远程访问仍需）。默认关闭，按需打开
+    "web_local_no_token": False,
     # ---------- 发送 / 日志 ----------
     "chunk_limit": 3800,
     "chunk_delay_sec": 0.5,
@@ -340,6 +345,7 @@ _DATA_PATH_KEYS: tuple[str, ...] = (
 #: 项目内目录：相对路径 → 相对项目目录（channels / outbox 等需要固定位置）
 _PROJECT_PATH_KEYS: tuple[str, ...] = (
     "workdir",
+    "persona_prompt_file",
     "messages_dir",
     "to_qq_dir",
     "to_qq_sent_dir",
@@ -525,6 +531,17 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
                 "（config.json 或环境变量 QQBOT_WEB_TOKEN）"
             )
     cfg = _resolve_paths(cfg)
+    # 长人设放文件里：只有 persona_prompt 为空时才读，避免覆盖显式配置
+    prompt_file = str(cfg.get("persona_prompt_file") or "").strip()
+    if prompt_file and not str(cfg.get("persona_prompt") or "").strip():
+        path = Path(prompt_file)
+        if path.is_file():
+            try:
+                cfg["persona_prompt"] = path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logging.warning("读取 persona_prompt_file 失败：%s", exc)
+        else:
+            logging.warning("persona_prompt_file 不存在：%s", path)
     return cfg
 
 

@@ -204,6 +204,7 @@ PDF 转文字、视频抽帧 + 字幕 + 语音转写。
 | `persona_enabled` | `true` | 是否启用「人格模式」（助手按人设说话） |
 | `persona_name` | `""` | 助手自称，例如「小助手」；留空 = 普通助手 |
 | `persona_prompt` | `""` | 人设描述，例如「说话简短、先给结论，不确定就直说不知道」 |
+| `persona_prompt_file` | `""` | 长人设写在文件里，启动时读入 `persona_prompt`；`persona_prompt` 非空时以它为准 |
 | `persona_skill` | `""` | 技能名：填了会提示模型先读 `<persona_skill_home>/<技能>/SKILL.md` |
 | `persona_skill_home` | `~/.agents/skills` | 技能目录根，默认 `~/.agents/skills` |
 | `persona_ack_lines` | `["收到，我处理一下。", "好的，稍等。"]` | 人格模式下收到任务的短回应 |
@@ -302,6 +303,7 @@ PDF 转文字、视频抽帧 + 字幕 + 语音转写。
 | `web_host` | `127.0.0.1` | 监听地址，建议保持 `127.0.0.1` |
 | `web_port` | `8080` | 监听端口 |
 | `web_token` | `""` | 访问口令；`web_enabled=true` 时必须设置一个非默认值 |
+| `web_local_no_token` | `false` | 本机回环访问免填口令（远程访问仍需 token）。单用户桌面可打开，共享机器请保持关闭 |
 
 ## 文件通道
 

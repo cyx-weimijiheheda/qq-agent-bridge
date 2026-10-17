@@ -95,6 +95,8 @@
   .stat b.err  { color: var(--lv-error); }
 
   .auth { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+  .auth-note { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  .auth-note.bad { color: var(--lv-warning); }
 
   /* ── 通用控件 ─────────────────────────────────────── */
   input, select, textarea {
@@ -234,8 +236,9 @@
   </div>
   <div class="statusrail" id="statusRail"></div>
   <div class="auth">
-    <input id="token" type="password" placeholder="访问 Token" autocomplete="current-password">
-    <button class="btn" id="saveToken">保存</button>
+    <input id="token" type="password" placeholder="访问 Token" autocomplete="current-password" hidden>
+    <button class="btn" id="saveToken" hidden>保存</button>
+    <span class="auth-note" id="authNote"></span>
   </div>
 </header>
 
@@ -331,6 +334,22 @@ const state = {
 
 function token() { return $("token").value.trim(); }
 
+/* 本机回环访问免 token；只有远程访问被拒时才把输入框亮出来 */
+function requireToken() {
+  $("token").hidden = false;
+  $("saveToken").hidden = false;
+  $("authNote").textContent = "远程访问需要 Token";
+  $("authNote").className = "auth-note bad";
+  if (document.activeElement !== $("token")) $("token").focus();
+}
+
+function clearTokenPrompt() {
+  $("token").hidden = true;
+  $("saveToken").hidden = true;
+  $("authNote").textContent = "本机免 Token";
+  $("authNote").className = "auth-note";
+}
+
 function toast(message, kind) {
   const el = $("toast");
   el.textContent = message;
@@ -352,7 +371,8 @@ async function api(path, options) {
   try { data = await res.json(); } catch (_) { /* 无 body */ }
   if (res.status === 401) {
     state.authFailed = true;
-    throw new Error("Token 无效或未填写，请在右上角填入访问 Token");
+    requireToken();
+    throw new Error("远程访问需要 Token");
   }
   if (!res.ok) {
     throw new Error((data && (data.detail || data.message)) || ("请求失败（HTTP " + res.status + "）"));
@@ -375,7 +395,6 @@ function stat(label, value, cls) {
 }
 
 async function refreshStatus() {
-  if (!token()) return;
   try {
     const d = await api("/api/status");
     $("wsDot").className = "pulse " + (d.ws_connected ? "on" : "off");
@@ -487,7 +506,6 @@ function appendLogs(lines, dividerText) {
 }
 
 async function loadLogs(reset) {
-  if (!token()) return;
   const logs = state.logs;
   if (reset) {
     logs.offset = 0;
@@ -580,7 +598,6 @@ function makeRow({ id, title, sub, cls, actions }) {
 
 /* ── 提醒 ───────────────────────────────────────────── */
 async function loadReminders() {
-  if (!token()) return;
   const box = $("reminderRows");
   let d;
   try { d = await api("/api/reminders?scope=" + encodeURIComponent(currentScope())); }
@@ -618,7 +635,6 @@ async function addReminder() {
 
 /* ── 待办 ───────────────────────────────────────────── */
 async function loadTodos() {
-  if (!token()) return;
   const box = $("todoRows");
   let d;
   try { d = await api("/api/todos?scope=" + encodeURIComponent(currentScope())); }
@@ -656,7 +672,6 @@ async function addTodo() {
 
 /* ── 任务 ───────────────────────────────────────────── */
 async function loadTasks() {
-  if (!token()) return;
   const box = $("taskRows");
   let d;
   try { d = await api("/api/tasks?scope=" + encodeURIComponent(currentScope())); }
@@ -818,20 +833,16 @@ $("chatInput").addEventListener("keydown", (e) => {
 
 /* ── 启动 ───────────────────────────────────────────── */
 async function boot() {
-  if (!token()) {
-    $("scopeHint").textContent = "填入右上角的访问 Token 后开始使用。";
-    $("scope").replaceChildren();
-    return;
-  }
   try {
     await loadScopes();
+    clearTokenPrompt();
     onScopeChange();
     await refreshStatus();
     switchTab(state.tab);
   } catch (err) {
     $("scopeHint").textContent = err.message;
     $("scope").replaceChildren();
-    toast(err.message, "bad");
+    if (!state.authFailed) toast(err.message, "bad");
   }
 }
 

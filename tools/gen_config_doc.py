@@ -116,7 +116,8 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         "人格设定",
         "留空为通用助手；填写后按设定的人设回应。",
         [
-            "persona_enabled", "persona_name", "persona_prompt", "persona_skill",
+            "persona_enabled", "persona_name", "persona_prompt", "persona_prompt_file",
+            "persona_skill",
             "persona_skill_home", "persona_ack_lines", "persona_chat_max_chars",
             "persona_chat_max_segments", "persona_chat_delay_sec",
             "persona_session_prefix", "persona_reset_turns", "persona_reset_hours",
@@ -168,7 +169,7 @@ GROUPS: list[tuple[str, str, list[str]]] = [
     (
         "Web 工作台",
         "浏览器里聊天、看提醒/待办/任务、查日志（默认关闭）。",
-        ["web_enabled", "web_host", "web_port", "web_token"],
+        ["web_enabled", "web_host", "web_port", "web_token", "web_local_no_token"],
     ),
     (
         "文件通道",
@@ -319,6 +320,7 @@ DESCRIPTIONS: dict[str, str] = {
     "persona_enabled": "是否启用「人格模式」（助手按人设说话）",
     "persona_name": "助手自称，例如「小助手」；留空 = 普通助手",
     "persona_prompt": "人设描述，例如「说话简短、先给结论，不确定就直说不知道」",
+    "persona_prompt_file": "长人设写在文件里，启动时读入 `persona_prompt`；`persona_prompt` 非空时以它为准",
     "persona_skill": "技能名：填了会提示模型先读 `<persona_skill_home>/<技能>/SKILL.md`",
     "persona_skill_home": "技能目录根，默认 `~/.agents/skills`",
     "persona_ack_lines": "人格模式下收到任务的短回应",
@@ -386,6 +388,7 @@ DESCRIPTIONS: dict[str, str] = {
     "web_host": "监听地址，建议保持 `127.0.0.1`",
     "web_port": "监听端口",
     "web_token": "访问口令；`web_enabled=true` 时必须设置一个非默认值",
+    "web_local_no_token": "本机回环访问免填口令（远程访问仍需 token）。单用户桌面可打开，共享机器请保持关闭",
     # 文件通道
     "messages_dir": "文件通道根目录",
     "to_qq_dir": "投递目录：往这里写 JSON 信封就会发到 QQ",

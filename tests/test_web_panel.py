@@ -391,3 +391,34 @@ def test_status_exposes_extended_fields(tmp_path):
     assert data["tasks_queued"] == 1
     assert data["active_buffers"] == 0
     assert data["scopes"] >= 2
+
+
+# ── 本机免 token ─────────────────────────────────────
+
+
+def test_loopback_bypasses_token_when_enabled(tmp_path):
+    panel, _ = make_panel(tmp_path, web_local_no_token=True)
+    client = TestClient(panel.app, client=("127.0.0.1", 50000))
+    assert client.get("/api/status").status_code == 200
+
+
+def test_loopback_requires_token_when_disabled(tmp_path):
+    """默认关闭 —— 安全默认值，不能悄悄放开。"""
+    panel, _ = make_panel(tmp_path)
+    client = TestClient(panel.app, client=("127.0.0.1", 50000))
+    assert client.get("/api/status").status_code == 401
+
+
+def test_remote_client_always_requires_token(tmp_path):
+    panel, _ = make_panel(tmp_path, web_local_no_token=True)
+    client = TestClient(panel.app, client=("203.0.113.9", 50000))
+    assert client.get("/api/status").status_code == 401
+    headers = {"Authorization": "Bearer test-token"}
+    assert client.get("/api/status", headers=headers).status_code == 200
+
+
+def test_loopback_still_accepts_correct_token(tmp_path):
+    panel, _ = make_panel(tmp_path, web_local_no_token=False)
+    client = TestClient(panel.app, client=("127.0.0.1", 50000))
+    headers = {"Authorization": "Bearer test-token"}
+    assert client.get("/api/status", headers=headers).status_code == 200

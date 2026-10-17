@@ -181,3 +181,59 @@ def test_env_override_wins_over_file(monkeypatch):
         cfg = load_config(path)
     assert cfg["web_port"] == 9090
     assert cfg["full_access_qq"] == ["20002"]
+
+
+def test_persona_prompt_file_is_loaded():
+    """长人设放在文件里：启动时读入 persona_prompt。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        persona = Path(tmp) / "persona.md"
+        persona.write_text("# 奶蛙\n你要用荒诞的方式讲哲学。", encoding="utf-8")
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "full_access_qq": ["123"],
+                    "persona_name": "奶蛙",
+                    "persona_prompt_file": str(persona),
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(path)
+        assert "荒诞的方式讲哲学" in cfg["persona_prompt"]
+
+
+def test_persona_prompt_wins_over_file():
+    """persona_prompt 显式配置时优先，不被文件覆盖。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        persona = Path(tmp) / "persona.md"
+        persona.write_text("文件里的设定", encoding="utf-8")
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "full_access_qq": ["123"],
+                    "persona_prompt": "配置里的设定",
+                    "persona_prompt_file": str(persona),
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(path)
+        assert cfg["persona_prompt"] == "配置里的设定"
+
+
+def test_persona_prompt_file_missing_is_tolerated():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "full_access_qq": ["123"],
+                    "persona_prompt_file": str(Path(tmp) / "nope.md"),
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = load_config(path)  # 不应抛异常
+        assert cfg["persona_prompt"] == ""

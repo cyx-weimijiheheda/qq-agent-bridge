@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -131,10 +131,26 @@ class WebPanel:
 
     def _require_auth(
         self,
+        request: Request,
         credentials: HTTPAuthorizationCredentials | None = Depends(_BEARER),  # noqa: B008
     ) -> None:
-        if credentials is None or credentials.credentials != self.token:
-            raise HTTPException(status_code=401, detail="Unauthorized")
+        if credentials is not None and credentials.credentials == self.token:
+            return
+        if self._local_request_allowed(request):
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    def _local_request_allowed(self, request: Request) -> bool:
+        """来自本机回环的请求可免填 token。
+
+        只在 `web_local_no_token` 显式打开时生效。绑定 127.0.0.1 时这意味着
+        同机的浏览器与进程都能直接访问 —— 单用户桌面上的取舍。远程访问仍要 token。
+        """
+        if not bool(self.bridge.cfg.get("web_local_no_token", False)):
+            return False
+        client = getattr(request, "client", None)
+        host = str(getattr(client, "host", "") or "")
+        return host in ("127.0.0.1", "::1", "localhost")
 
     # ---- 作用域 ----
 
