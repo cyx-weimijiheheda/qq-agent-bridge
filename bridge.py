@@ -219,15 +219,20 @@ class Bridge:
         backoff = 1.0
         while True:
             try:
-                async with websockets.connect(
-                    url,
-                    ping_interval=20,
-                    ping_timeout=20,
-                    max_size=16 * 1024 * 1024,
-                ) as ws:
+                access_token = self._onebot_access_token()
+                connect_options: dict[str, Any] = {
+                    "ping_interval": 20,
+                    "ping_timeout": 20,
+                    "max_size": 16 * 1024 * 1024,
+                }
+                if access_token:
+                    connect_options["additional_headers"] = {
+                        "Authorization": f"Bearer {access_token}"
+                    }
+                async with websockets.connect(url, **connect_options) as ws:
                     self.ws = ws
                     backoff = 1.0
-                    logging.info("已连接 NapCat: %s", url)
+                    logging.info("已连接 SnowLuma: %s", url)
                     async for raw in ws:
                         try:
                             event = json.loads(raw)
@@ -245,9 +250,26 @@ class Bridge:
                 raise
             except Exception as exc:
                 self.ws = None
-                logging.warning("NapCat 连接失败：%s，%.0f 秒后重连", exc, backoff)
+                logging.warning("SnowLuma 连接失败：%s，%.0f 秒后重连", exc, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
+
+    def _onebot_access_token(self) -> str:
+        """Resolve the OneBot token from the SnowLuma account selected by self_id."""
+        uin = str(self.cfg.get("self_id") or "").strip()
+        if not uin:
+            return ""
+        snowluma_dir = Path(os.environ.get("SNOWLUMA_DIR") or (Path.home() / "SnowLuma"))
+        path = snowluma_dir / "config" / f"onebot_{uin}.json"
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        adapters = config.get("networks", {}).get("wsServers", [])
+        for adapter in adapters:
+            if adapter.get("name") == "ws-default" and adapter.get("enabled", True):
+                return str(adapter.get("accessToken") or "").strip()
+        return ""
 
     async def _on_event(self, event: dict[str, Any]) -> None:
         # 群里 @ 检测要靠 self_id；事件带了就以事件为准

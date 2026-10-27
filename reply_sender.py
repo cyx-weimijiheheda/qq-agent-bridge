@@ -35,7 +35,7 @@ async def send_reply(
         delay = float(bridge.cfg.get("chunk_delay_sec", 0.5))
 
     threshold = int(bridge.cfg.get("forward_threshold", 5))
-    # 群里可以单独关掉合并转发（有些 NapCat 版本对群节点校验更严）
+    # 群里可以单独关掉合并转发；框架拒绝时会回退为分条发送。
     forward_allowed = not is_group(user_id) or bool(
         bridge.cfg.get("group_forward_enabled", True)
     )

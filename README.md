@@ -1,6 +1,6 @@
 # QQ AI 助手
 
-基于 [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot v11）的 QQ 私聊 AI 助手，可对接任意 OpenAI 兼容模型。
+基于 [SnowLuma](https://github.com/SnowLuma/SnowLuma)（OneBot v11）的 QQ 私聊 AI 助手，可对接任意 OpenAI 兼容模型。
 
 支持文字对话、图片理解、视频分析、文件收发与任务执行：消息交给模型处理后，模型可在受限的工作目录内读写文件、
 执行命令、联网检索，并把产出的文件直接发回 QQ。全部数据与密钥保存在本机。
@@ -53,22 +53,20 @@
 ## 环境要求
 
 - Python 3.10+（推荐 3.12 / 3.13）
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ)（提供 OneBot v11 WebSocket 服务）
+- [SnowLuma](https://github.com/SnowLuma/SnowLuma)（提供 OneBot v11 WebSocket 服务）
 - 一个 OpenAI 兼容模型的 API Key（官方、DeepSeek、中转站、自建网关、本地 Ollama 均可）
 
 图片与视频分析需要所选模型支持图片输入。
 
 ## 快速开始
 
-### 配置 NapCat
+### 配置 SnowLuma
 
 建议使用 QQ 小号，避免影响主号。
 
-1. 安装 NapCatQQ（Windows 安装包 / macOS DMG / Linux 脚本）。
-2. 打开 NapCat，用小号扫码登录。
-3. 进入 NapCat WebUI →「网络配置」→ 新建 **WebSocket 服务器**：
-   - 监听地址 `127.0.0.1`，端口 `3001`，消息格式 `array`
-   - 保存后重启 NapCat 生效
+1. 按 [SnowLuma 官方指南](https://snowluma.github.io/en/docs/guide/quickstart)安装并启动 SnowLuma。
+2. 在 SnowLuma WebUI 中完成 QQ 登录及 OneBot v11 WebSocket 服务配置。
+3. 将 WebSocket 服务设为本机可访问，默认地址为 `ws://127.0.0.1:3001`；如使用了其他地址，更新下方 `onebot_ws_url`。
 
 ### 安装
 
@@ -103,7 +101,7 @@ cp config.example.json config.json      # Windows: copy config.example.json conf
 
 | 字段 | 说明 | 示例 |
 | --- | --- | --- |
-| `onebot_ws_url` | NapCat 的 WebSocket 地址 | `ws://127.0.0.1:3001` |
+| `onebot_ws_url` | SnowLuma 的 OneBot WebSocket 地址 | `ws://127.0.0.1:3001` |
 | `full_access_qq` | **必填**，允许使用机器人的 QQ 号，可填多个 | `["123456789"]` |
 | `api_base_url` | OpenAI 兼容接口地址 | `https://api.openai.com/v1` |
 | `api_key` | 接口密钥 | `sk-...` |
@@ -515,7 +513,7 @@ sudo systemctl enable --now qq-agent-bridge
 
 ### 发送消息无响应
 
-私聊依次检查：NapCat 是否运行且已用小号登录；发送方 QQ 号是否在 `full_access_qq` 中。
+私聊依次检查：SnowLuma 是否运行且 QQ 已登录；发送方 QQ 号是否在 `full_access_qq` 中。
 群聊见下方「群里 @ 了机器人却没反应」。仍无响应时查看 `data/bridge.log`。
 
 ### 启动报「未配置模型 API key」
@@ -555,7 +553,7 @@ sudo systemctl enable --now qq-agent-bridge
 - **`workdir` 使用专用目录**：避免指向家目录、桌面或代码仓库。
 - **Web 工作台仅监听本机**：保持 `web_host` 为 `127.0.0.1`；需要远程访问时使用 SSH 隧道或反向代理 + HTTPS。
 - **`web_token` 使用随机长字符串**。
-- QQ 账号风控与 NapCat 使用风险由使用者自行承担。
+- QQ 账号风控与 SnowLuma 使用风险由使用者自行承担。
 
 ## 开发
 
@@ -577,7 +575,7 @@ ruff check .
 
 ## English
 
-An AI assistant for QQ private chats, built on [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot v11)
+An AI assistant for QQ private chats, built on [SnowLuma](https://github.com/SnowLuma/SnowLuma) (OneBot v11)
 and any OpenAI-compatible model endpoint.
 
 - Understands text, images, videos and documents; can run tasks inside a sandboxed working directory

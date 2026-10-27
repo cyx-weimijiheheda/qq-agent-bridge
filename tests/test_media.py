@@ -18,8 +18,8 @@ class FakeBridge:
         return self.action_result
 
 
-def test_download_incoming_image_prefers_napcat_local_path(monkeypatch, tmp_path):
-    local = tmp_path / "napcat_cache.png"
+def test_download_incoming_image_prefers_local_path(monkeypatch, tmp_path):
+    local = tmp_path / "onebot_cache.png"
     local.write_bytes(b"png")
     bridge = FakeBridge({"file": str(local), "url": "http://fresh"}, tmp_path)
     captured: dict = {}

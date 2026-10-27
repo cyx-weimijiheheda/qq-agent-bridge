@@ -29,9 +29,9 @@
 
 | 键 | 默认值 | 说明 |
 | --- | --- | --- |
-| `onebot_ws_url` | `ws://127.0.0.1:3001` | NapCat 的 OneBot WebSocket 地址，默认本机 3001 端口 |
+| `onebot_ws_url` | `ws://127.0.0.1:3001` | SnowLuma 的 OneBot WebSocket 地址，默认本机 3001 端口 |
 | `full_access_qq` | `[]` | **必填**。允许使用机器人的 QQ 号列表；不在列表里的私聊会被忽略 |
-| `self_id` | `""` | 机器人自己的 QQ 号。用于识别群里的 `@机器人`；事件自带 self_id 时以事件为准 |
+| `self_id` | `""` | 机器人自己的 QQ 号；用于群聊 `@机器人` 识别，也用于选择 SnowLuma 对应账号配置 |
 
 ## 群聊
 
@@ -47,7 +47,7 @@
 | `group_reply_without_at` | `false` | 是否抽样让模型考虑普通群消息；触发后模型可按语境接话或不插话，默认关闭 |
 | `group_reply_trigger_level` | `20` | 非 @ 消息触发模型的概率，0–100；默认 20，仅 `group_reply_without_at` 开启时生效 |
 | `group_rate_limit_per_min` | `0` | 每群每分钟最多回复多少条；0 = 不限。群人多时建议设 3–5 |
-| `group_forward_enabled` | `true` | 群里是否允许把长回复合并转发（NapCat 拒绝时自动回退为分条发送） |
+| `group_forward_enabled` | `true` | 群里是否允许把长回复合并转发（框架拒绝时自动回退为分条发送） |
 | `group_command_hint` | `群里暂不支持命令，可以私聊我` | 群里被 @ 且发命令时的提示语；留空 = 静默忽略。群聊暂不支持命令 |
 
 ## 目录与状态文件

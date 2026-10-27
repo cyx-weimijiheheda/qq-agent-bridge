@@ -468,7 +468,7 @@ async function refreshStatus() {
   try {
     const d = await api("/api/status");
     $("wsDot").className = "pulse " + (d.ws_connected ? "on" : "off");
-    $("wsDot").title = d.ws_connected ? "已连接 NapCat" : "未连接 NapCat";
+    $("wsDot").title = d.ws_connected ? "已连接 SnowLuma" : "未连接 SnowLuma";
     const rail = $("statusRail");
     rail.replaceChildren(
       stat("机器人", d.self_id || "—"),

@@ -21,7 +21,7 @@ python -m pytest tests/test_web_panel.py -q
 ruff check .                     # 静态检查（line-length 100，已忽略 E501）
 python tools/gen_config_doc.py   # 改了配置项后重新生成 CONFIG.md
 ./start.sh                       # 启动机器人
-./start-all.sh                   # 连同 NapCat 一起启动（本机辅助脚本）
+./start-all.sh                   # 连同 SnowLuma 一起启动（本机辅助脚本）
 ./stop-all.sh                    # 停止（--force 强制）
 ```
 
@@ -84,7 +84,7 @@ Python 3.10+（ruff 目标 3.13）。依赖分四份：`requirements.txt`、`-ag
 
 ## 本机运行注意
 
-- **NapCat AppImage 必须在它自己的目录里启动**：`AppRun` 把 `$PWD` 当配置目录，换了目录
-  就等于空配置，表现为 6099 能开但 OneBot 的 3001 永不监听。`start-all.sh` 已处理。
+- **SnowLuma 必须按官方部署方式启动**：Linux 推荐 Docker 部署；本机启动可设置 `SNOWLUMA_DIR` 指向解压目录。
+  `start-all.sh` 也支持 Docker 已启动时使用 `--no-snowluma` 仅启动机器人。
 - `config.json` 是本地文件，其中的 `full_access_qq`、`web_token`、`api_key` 不得进提交。
 - Web 面板的 `web_local_no_token` 只对回环地址生效，且默认关闭。

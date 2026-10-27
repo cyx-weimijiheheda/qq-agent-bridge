@@ -229,7 +229,7 @@ async def download_incoming_image(bridge: Any, image: dict[str, str]) -> str:
 async def download_incoming_video(bridge: Any, video: dict[str, str]) -> str:
     """下载/定位收到的视频文件，返回本地绝对路径。
 
-    NapCat 的 OneBot v11 video 段 data 字段：file（路径/URL/file:///）、
+    OneBot v11 video 段 data 字段：file（路径/URL/file:///）、
     path（本地路径）、url（下载地址）、name（文件名）。按优先级依次尝试。
     """
     url = str(video.get("url") or "")
@@ -356,7 +356,7 @@ async def download_incoming_file(
                     bridge, url, name or str(data.get("file_name") or "")
                 )
             except FileNotFoundError:
-                # NapCat 偶发把本地路径塞进 url 字段；继续尝试 file / base64 字段
+                # 部分 OneBot 实现会把本地路径放进 url 字段；继续尝试 file / base64 字段
                 pass
         local_path = str(data.get("file") or data.get("path") or "")
         if local_path and Path(local_path).is_file():
