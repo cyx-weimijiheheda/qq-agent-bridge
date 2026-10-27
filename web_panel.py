@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from calendar_todos import normalize_todo_text
+from config import DEFAULTS, _env_raw
 from scheduler import add_reminder_from_text
 from targets import group_key, group_member_key, parse_group_member_key
 
@@ -88,6 +91,96 @@ class ContextGroupClearIn(BaseModel):
     group_id: str
 
 
+class SettingsUpdateIn(BaseModel):
+    values: dict[str, Any]
+
+
+_SECRET_SETTING_PARTS = ("api_key", "token", "password", "secret")
+_RESTART_SETTINGS = {
+    "onebot_ws_url", "web_enabled", "web_host", "web_port", "web_token",
+    "data_dir", "memory_db", "state_db_file", "sessions_file", "log_file",
+    "workdir", "timetable_file", "persona_prompt_file", "plugins_dir",
+    "plugins_enabled", "keep_proxy", "tts_backend", "tts_local_url", "tts_timeout_sec",
+    "voice_cache_dir", "messages_dir", "to_qq_dir", "to_qq_sent_dir",
+    "from_qq_log_file", "main_agent_inbox_file", "agent_status_file",
+    "legacy_agent_status_file", "pending_file", "outbox_dir", "outbox_sent_dir",
+}
+
+
+def _setting_description_map() -> dict[str, str]:
+    """从配置手册读取说明，设置页与全量配置文档共用同一份文案。"""
+    path = Path(__file__).resolve().parent / "CONFIG.md"
+    result: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if len(cells) >= 3 and cells[0].startswith("`") and cells[0].endswith("`"):
+                result[cells[0][1:-1]] = cells[2]
+    except OSError:
+        pass
+    return result
+
+
+def _setting_category(key: str) -> str:
+    groups = (
+        ("群聊", ("group_",)),
+        ("连接与权限", ("onebot_", "self_id", "full_access_", "web_enabled", "web_host", "web_port", "web_token", "web_local")),
+        ("模型与推理", ("api_", "model", "chat_", "task_", "search_", "request_timeout", "fallback_")),
+        ("目录与文件", ("data_dir", "workdir", "memory_db", "state_db_file", "sessions_file", "log_", "_file", "_dir", "_path")),
+        ("人设与提示词", ("persona_", "chat_style_", "media_", "emoticon_", "proactive_topic_", "extra_skill_")),
+        ("工具与记忆", ("tools_", "shell_", "file_tools_", "web_search_", "knowledge_", "skills_", "memory_", "github_")),
+        ("图片与视觉", ("vision_", "image_search_")),
+        ("PDF 与视频", ("pdf_", "video_")),
+        ("主动消息", ("proactive_",)),
+        ("语音", ("tts_", "voice_", "silk_")),
+    )
+    for label, prefixes in groups:
+        if any(key.startswith(prefix) or key.endswith(prefix) for prefix in prefixes):
+            return label
+    return "其他参数"
+
+
+def _setting_is_secret(key: str) -> bool:
+    return any(part in key.lower() for part in _SECRET_SETTING_PARTS)
+
+
+def _setting_is_restart_only(key: str) -> bool:
+    return key in _RESTART_SETTINGS or key.endswith(("_file", "_dir", "_path"))
+
+
+def _validate_setting_value(key: str, value: Any) -> Any:
+    default = DEFAULTS[key]
+    if isinstance(default, bool):
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} 必须是布尔值")
+    elif isinstance(default, int):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key} 必须是整数")
+    elif isinstance(default, float):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{key} 必须是数字")
+        value = float(value)
+    elif isinstance(default, str):
+        if not isinstance(value, str):
+            raise ValueError(f"{key} 必须是字符串")
+        if len(value) > 100_000:
+            raise ValueError(f"{key} 内容过长")
+    elif isinstance(default, list):
+        if not isinstance(value, list):
+            raise ValueError(f"{key} 必须是 JSON 数组")
+        if len(value) > 10_000:
+            raise ValueError(f"{key} 数组过长")
+    elif isinstance(default, dict) and not isinstance(value, dict):
+        raise ValueError(f"{key} 必须是 JSON 对象")
+    if key == "group_reply_trigger_level" and not 0 <= value <= 100:
+        raise ValueError("group_reply_trigger_level 必须在 0–100 之间")
+    if key == "group_rate_limit_per_min" and value < 0:
+        raise ValueError("group_rate_limit_per_min 不能小于 0")
+    if key == "web_port" and not 1 <= value <= 65535:
+        raise ValueError("web_port 必须在 1–65535 之间")
+    return value
+
+
 def _kind_of(key: str) -> str:
     text = str(key)
     if text.startswith("web-"):
@@ -138,7 +231,73 @@ class WebPanel:
         self._scope_cache: set[str] | None = None
         self._scope_cache_ts = 0.0
         self._rebuild_lock = asyncio.Lock()
+        self._settings_lock = asyncio.Lock()
         self._register_routes()
+
+    def _settings_file_path(self) -> Path:
+        raw = str(self.bridge.cfg.get("_config_path") or "").strip()
+        if not raw:
+            raise RuntimeError("找不到当前配置文件路径")
+        return Path(raw).expanduser()
+
+    def _read_saved_settings(self) -> dict[str, Any]:
+        path = self._settings_file_path()
+        if not path.exists():
+            return {}
+        with path.open(encoding="utf-8") as handle:
+            raw = json.load(handle)
+        if not isinstance(raw, dict):
+            raise ValueError("配置文件根节点必须是 JSON 对象")
+        return raw
+
+    def _settings_records(self) -> list[dict[str, Any]]:
+        raw = self._read_saved_settings()
+        descriptions = _setting_description_map()
+        records = []
+        for key, default in DEFAULTS.items():
+            env_override = _env_raw(key) is not None
+            effective = self.bridge.cfg.get(key, default)
+            value = effective if env_override else raw.get(key, default)
+            source = "环境变量" if env_override else ("配置文件" if key in raw else "内置默认值")
+            if key == "persona_prompt" and key not in raw and effective:
+                value = effective
+                source = "人设文件"
+            secret = _setting_is_secret(key)
+            records.append({
+                "key": key,
+                "value": None if secret else value,
+                "default": None if secret else default,
+                "type": "null" if default is None else type(default).__name__,
+                "category": _setting_category(key),
+                "description": descriptions.get(key, ""),
+                "secret": secret,
+                "is_set": bool(value) if secret else True,
+                "env_override": env_override,
+                "restart_required": _setting_is_restart_only(key),
+                "source": source,
+            })
+        return records
+
+    @staticmethod
+    def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=f".{path.name}.", suffix=".tmp", delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp_path, mode)
+            os.replace(temp_path, path)
+        finally:
+            if temp_path is not None and temp_path.exists():
+                temp_path.unlink()
 
     def _require_auth(
         self,
@@ -277,12 +436,14 @@ class WebPanel:
             key = item["key"]
             if item["kind"] == "web":
                 entry = self._context_meta(key)
-                entry.update({"label": item["label"], "kind": "web"})
-                web.append(entry)
+                if entry["has_context"]:
+                    entry.update({"label": item["label"], "kind": "web"})
+                    web.append(entry)
             elif item["kind"] in ("qq", "other"):
                 entry = self._context_meta(key)
-                entry.update({"label": item["label"], "kind": item["kind"]})
-                private.append(entry)
+                if entry["has_context"]:
+                    entry.update({"label": item["label"], "kind": item["kind"]})
+                    private.append(entry)
 
         groups: dict[str, list[dict[str, Any]]] = {}
         state_db = getattr(self.bridge, "state_db", None)
@@ -319,6 +480,8 @@ class WebPanel:
                     continue
                 key = group_member_key(group_id, user_id)
                 entry = self._context_meta(key)
+                if not entry["has_context"] and not int(row.get("message_count") or 0):
+                    continue
                 nickname = str(row.get("nickname") or "")
                 entry.update(
                     {
@@ -346,6 +509,8 @@ class WebPanel:
                     if any(item["key"] == key for item in groups.get(group_id, [])):
                         continue
                     entry = self._context_meta(key)
+                    if not entry["has_context"]:
+                        continue
                     entry.update(
                         {
                             "group_id": group_id,
@@ -362,6 +527,8 @@ class WebPanel:
                     if any(item["key"] == key for item in groups.get(group_id, [])):
                         continue
                     entry = self._context_meta(key)
+                    if not entry["has_context"]:
+                        continue
                     entry.update(
                         {
                             "group_id": group_id,
@@ -793,14 +960,25 @@ class WebPanel:
                 for thread_id in thread_ids:
                     deleted_runs += await asyncio.to_thread(self._delete_context_history, thread_id)
                 deleted_group_messages = 0
-                if key.startswith("g:") and parse_group_member_key(key) is None:
+                deleted_group_members = 0
+                member_scope = parse_group_member_key(key)
+                if member_scope:
+                    state_db = getattr(self.bridge, "state_db", None)
+                    if state_db is not None:
+                        result = await asyncio.to_thread(
+                            state_db.delete_group_member_context,
+                            member_scope[0], member_scope[1],
+                        )
+                        deleted_group_messages = result["messages"]
+                        deleted_group_members = result["members"]
+                elif key.startswith("g:"):
                     state_db = getattr(self.bridge, "state_db", None)
                     if state_db is not None:
                         deleted_group_messages = await asyncio.to_thread(state_db.delete_group_context, key[2:])
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"删除失败：{exc}") from exc
             self._invalidate_scopes()
-            return {"ok": True, "message": f"已永久删除 {len(thread_ids)} 个线程的模型历史（{deleted_runs} 条）及 {deleted_group_messages} 条群消息。"}
+            return {"ok": True, "message": f"已永久删除 {len(thread_ids)} 个线程的模型历史（{deleted_runs} 条）、{deleted_group_messages} 条群消息和 {deleted_group_members} 条群成员目录记录。"}
 
         @app.post("/api/contexts/compress", dependencies=[Depends(self._require_auth)])
         async def api_context_compress(body: ContextClearIn) -> dict[str, Any]:
@@ -897,7 +1075,7 @@ class WebPanel:
             if state_db is not None:
                 try:
                     deleted_group_messages = await asyncio.to_thread(
-                        state_db.delete_group_context, group_id
+                        state_db.delete_group_context, group_id, include_members=True
                     )
                 except Exception:
                     logging.warning("删除群消息上下文失败：%s", group_id, exc_info=True)
@@ -1052,6 +1230,93 @@ class WebPanel:
                 k: v
                 for k, v in bridge.cfg.items()
                 if not any(s in k.lower() for s in sensitive_keys)
+            }
+
+        @app.get("/api/settings", dependencies=[Depends(self._require_auth)])
+        async def api_settings() -> dict[str, Any]:
+            try:
+                entries = self._settings_records()
+            except Exception as exc:
+                logging.warning("读取设置失败：%s", exc)
+                raise HTTPException(status_code=500, detail="无法读取配置文件") from exc
+            categories = list(dict.fromkeys(item["category"] for item in entries))
+            return {"entries": entries, "categories": categories}
+
+        @app.post("/api/settings", dependencies=[Depends(self._require_auth)])
+        async def api_settings_update(body: SettingsUpdateIn) -> dict[str, Any]:
+            if not body.values:
+                raise HTTPException(status_code=400, detail="没有要保存的设置")
+            async with self._settings_lock:
+                try:
+                    updates: dict[str, Any] = {}
+                    for key, value in body.values.items():
+                        if key not in DEFAULTS:
+                            raise ValueError(f"不支持的配置项：{key}")
+                        if _env_raw(key) is not None:
+                            raise ValueError(f"{key} 由环境变量覆盖，请修改环境变量")
+                        updates[key] = _validate_setting_value(key, value)
+
+                    current_file = self._read_saved_settings()
+                    updated_file = dict(current_file)
+                    updated_file.update(updates)
+                    if "api_key" in updates:
+                        from agent_client import _load_api_key
+
+                        try:
+                            _load_api_key({**bridge.cfg, **updates})
+                        except ValueError as exc:
+                            raise ValueError("API 密钥不能为空；请填写可用密钥") from exc
+                    path = self._settings_file_path()
+                    await asyncio.to_thread(self._write_json_atomic, path, updated_file)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                except Exception as exc:
+                    logging.warning("写入配置失败：%s", exc)
+                    raise HTTPException(status_code=500, detail="配置文件写入失败") from exc
+
+                restart_keys = [key for key in updates if _setting_is_restart_only(key)]
+                live_updates = {
+                    key: value for key, value in updates.items()
+                    if key not in restart_keys
+                }
+                bridge.cfg.update(live_updates)
+                if "self_id" in live_updates:
+                    bridge.self_id = str(live_updates["self_id"] or "")
+                agent = getattr(bridge, "agent", None)
+                if agent is not None and live_updates:
+                    if {"api_base_url", "api_key", "model", "user_agent"} & live_updates.keys():
+                        from agent_client import _load_api_key
+
+                        agent._api_key = _load_api_key(bridge.cfg)
+                        agent._base_url = str(
+                            bridge.cfg.get("api_base_url")
+                            or os.environ.get("OPENAI_BASE_URL")
+                            or "https://api.openai.com/v1"
+                        ).rstrip("/")
+                        agent._default_model = str(
+                            bridge.cfg.get("model")
+                            or os.environ.get("OPENAI_MODEL")
+                            or "gpt-4o-mini"
+                        )
+                        from agent_client import BROWSER_UA
+
+                        agent._user_agent = str(bridge.cfg.get("user_agent") or BROWSER_UA)
+                    if hasattr(agent, "_agents"):
+                        agent._agents.clear()
+                    if any(key.startswith("memory_") for key in live_updates) and hasattr(agent, "_memory_manager"):
+                        agent._memory_manager = None
+                if "log_level" in live_updates:
+                    logging.getLogger().setLevel(str(live_updates["log_level"]).upper())
+                self._invalidate_scopes()
+            return {
+                "ok": True,
+                "saved": list(updates),
+                "applied": list(live_updates),
+                "restart_required": restart_keys,
+                "message": (
+                    f"已保存 {len(updates)} 项设置；{len(live_updates)} 项立即生效。"
+                    + (f"另有 {len(restart_keys)} 项需要重启后生效。" if restart_keys else "")
+                ),
             }
 
         # ---- 聊天 / 命令 ----

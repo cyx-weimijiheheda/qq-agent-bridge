@@ -404,11 +404,42 @@ class StateDB:
             " FROM group_context GROUP BY group_id ORDER BY group_id"
         )
 
-    def delete_group_context(self, group_id: str) -> int:
-        """永久删除指定群的原始消息上下文。"""
-        return self._changed(
-            "DELETE FROM group_context WHERE group_id = ?", (str(group_id),)
-        )
+    def delete_group_context(self, group_id: str, *, include_members: bool = False) -> int:
+        """永久删除指定群的原始消息；整群清理时同时移除成员目录。"""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                count = self._conn.execute(
+                    "DELETE FROM group_context WHERE group_id = ?", (str(group_id),)
+                ).rowcount
+                if include_members:
+                    self._conn.execute(
+                        "DELETE FROM group_members WHERE group_id = ?", (str(group_id),)
+                    )
+                self._conn.commit()
+                return max(0, int(count))
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
+    def delete_group_member_context(self, group_id: str, user_id: str) -> dict[str, int]:
+        """永久删除成员在群上下文目录及其保存的发言。"""
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                messages = self._conn.execute(
+                    "DELETE FROM group_context WHERE group_id = ? AND user_id = ?",
+                    (str(group_id), str(user_id)),
+                ).rowcount
+                members = self._conn.execute(
+                    "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
+                    (str(group_id), str(user_id)),
+                ).rowcount
+                self._conn.commit()
+                return {"messages": max(0, int(messages)), "members": max(0, int(members))}
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
 
     # ---- knowledge base ----
 

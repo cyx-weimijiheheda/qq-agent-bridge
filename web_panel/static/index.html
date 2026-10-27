@@ -116,8 +116,8 @@
   }
   .btn:hover { background: #292735; border-color: #3a3748; }
   .btn:disabled { opacity: .45; cursor: not-allowed; }
-  .btn.primary { background: #2b4a5e; border-color: #38617b; color: #dceaf4; }
-  .btn.primary:hover { background: #325670; }
+  .btn.primary { background: var(--panel-2); border-color: var(--line); color: var(--fg); }
+  .btn.primary:hover { background: #292735; border-color: #3a3748; }
   .btn.danger:hover { background: #4a2a2f; border-color: #6b3b42; color: #f0b8bd; }
 
   /* ── 作用域条 ─────────────────────────────────────── */
@@ -131,11 +131,11 @@
   .scopebar .hint { color: var(--muted); }
 
   /* ── 标签页 ───────────────────────────────────────── */
-  .tabs { display: flex; gap: 0; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 8px; }
+  .tabs { display: flex; gap: 0; background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 8px; overflow-x: auto; flex: none; }
   .tabs button {
     background: none; border: none; border-bottom: 2px solid transparent;
     color: var(--muted); font-family: var(--sans); font-size: 13px;
-    padding: 11px 15px; cursor: pointer; transition: color .12s, border-color .12s;
+    padding: 11px 15px; cursor: pointer; transition: color .12s, border-color .12s; flex: none;
   }
   .tabs button:hover { color: var(--fg-dim); }
   .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
@@ -199,6 +199,25 @@
   }
   .ctxview[hidden] { display: none; }
   .ctxview .chatlog { padding: 0; }
+
+  /* ── 设置 ─────────────────────────────────────────── */
+  .settings-groups { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .settings-group { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+  .settings-group > summary { cursor: pointer; padding: 10px 12px; background: var(--panel-2); font-weight: 600; }
+  .settings-group[open] > summary { border-bottom: 1px solid var(--line); }
+  .setting-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.1fr); gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--line-soft); align-items: start; }
+  .setting-row:last-child { border-bottom: 0; }
+  .setting-key { font: 12px var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+  .setting-description { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .setting-control { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .setting-control input:not([type=checkbox]), .setting-control textarea { width: 100%; }
+  .setting-control textarea { min-height: 54px; font: 12px var(--mono); }
+  .setting-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 11px; }
+  .setting-meta .restart { color: var(--lv-warning); }
+  .setting-meta .env { color: var(--lv-info); }
+  .setting-check { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+  .settings-note { color: var(--fg-dim); font-size: 12px; padding: 8px 10px; border-left: 3px solid var(--lv-warning); background: var(--panel); }
+  @media (max-width: 720px) { .setting-row { grid-template-columns: 1fr; gap: 7px; } }
 
   /* ── 日志 ─────────────────────────────────────────── */
   .logview {
@@ -275,6 +294,7 @@
   <button           data-tab="tasks"      role="tab">任务</button>
   <button           data-tab="contexts"   role="tab">上下文</button>
   <button           data-tab="chat"       role="tab">聊天</button>
+  <button           data-tab="settings"   role="tab">设置</button>
 </nav>
 
 <main>
@@ -349,6 +369,18 @@
       <button class="btn primary" id="chatSend">发送</button>
     </div>
   </section>
+
+  <!-- 设置 -->
+  <section class="panel" id="panel-settings">
+    <div class="toolbar">
+      <input id="settingsSearch" class="grow" placeholder="搜索配置项或说明">
+      <button class="btn" id="settingsRefresh">重新加载</button>
+      <button class="btn primary" id="settingsSave">保存并应用</button>
+      <span class="meta" id="settingsMeta"></span>
+    </div>
+    <div class="settings-note">设置按类别保存。可热更新的项目立即应用；连接、路径等启动时固定的项目会保存并标记“重启生效”。密钥不会显示，留空表示保持原值。</div>
+    <div class="settings-groups" id="settingsGroups"></div>
+  </section>
 </main>
 
 <div id="toast" role="status" aria-live="polite"></div>
@@ -367,6 +399,7 @@ const state = {
   scope: "",
   authFailed: false,
   logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "" },
+  settings: { entries: [], dirty: new Set() },
 };
 
 function token() { return $("token").value.trim(); }
@@ -496,6 +529,7 @@ function switchTab(name) {
   else if (name === "todos") loadTodos();
   else if (name === "reminders") loadReminders();
   else if (name === "contexts") loadContexts();
+  else if (name === "settings") loadSettings();
 }
 
 /* ── 日志 ───────────────────────────────────────────── */
@@ -958,7 +992,11 @@ async function clearContext(key, label) {
 }
 
 async function deleteContext(key, label) {
-  if (!confirm("永久删除「" + label + "」的所有模型会话历史" + (key.startsWith("g:") ? "和该群保存的消息" : "") + "？此操作不可恢复。")) return;
+  const memberContext = /^g:[^:]+:[^:]+$/.test(key);
+  const detail = memberContext
+    ? "，并删除该成员在群成员目录和群消息记录中的数据"
+    : key.startsWith("g:") ? "，并删除群共享消息记录" : "";
+  if (!confirm("永久删除「" + label + "」的模型会话历史" + detail + "？此操作不可恢复。")) return;
   try {
     const d = await api("/api/contexts/delete", { method: "POST", body: { key } });
     toast(d.message || "已删除", d.ok === false ? "bad" : "good");
@@ -991,6 +1029,145 @@ async function clearGroupContext(groupId) {
     loadScopes();
   } catch (err) { toast(err.message, "bad"); }
 }
+
+/* ── 设置 ──────────────────────────────────────────── */
+function settingInput(entry) {
+  let input;
+  let control;
+  if (entry.type === "bool") {
+    control = document.createElement("label");
+    control.className = "setting-check";
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(entry.value);
+    const stateLabel = document.createElement("span");
+    stateLabel.textContent = input.checked ? "开启" : "关闭";
+    input.addEventListener("change", () => { stateLabel.textContent = input.checked ? "开启" : "关闭"; });
+    control.append(input, stateLabel);
+  } else if (["list", "dict", "null"].includes(entry.type) || (!entry.secret && typeof entry.value === "string" && (entry.value.length > 90 || entry.value.includes("\n")))) {
+    input = document.createElement("textarea");
+    input.value = entry.secret ? "" : JSON.stringify(entry.value, null, 2);
+    input.placeholder = entry.secret ? (entry.is_set ? "已配置；输入新值替换，留空保持" : "输入密钥") : "填写 JSON 值";
+  } else {
+    input = document.createElement("input");
+    input.type = entry.secret ? "password" : (entry.type === "int" || entry.type === "float") ? "number" : "text";
+    if (entry.type === "int") input.step = "1";
+    if (entry.type === "float") input.step = "any";
+    input.value = entry.secret ? "" : (entry.value ?? "");
+    input.placeholder = entry.secret ? (entry.is_set ? "已配置；输入新值替换，留空保持" : "输入密钥") : "";
+  }
+  const field = input;
+  field.classList.add("setting-input");
+  field.dataset.key = entry.key;
+  field.dataset.type = ["list", "dict", "null"].includes(entry.type) ? "json" : entry.type;
+  field.dataset.secret = entry.secret ? "1" : "0";
+  field.disabled = entry.env_override;
+  field.addEventListener("input", markSettingDirty);
+  field.addEventListener("change", markSettingDirty);
+  return control || input;
+}
+
+function markSettingDirty(event) {
+  const input = event.currentTarget;
+  state.settings.dirty.add(input.dataset.key);
+  input.closest(".setting-row")?.classList.add("is-dirty");
+  $("settingsMeta").textContent = state.settings.dirty.size + " 项未保存";
+}
+
+function settingRow(entry) {
+  const row = document.createElement("div");
+  row.className = "setting-row";
+  row.dataset.search = (entry.key + " " + entry.description + " " + entry.category).toLowerCase();
+  const info = document.createElement("div");
+  const key = document.createElement("div");
+  key.className = "setting-key";
+  key.textContent = entry.key;
+  info.append(key);
+  if (entry.description) {
+    const desc = document.createElement("div");
+    desc.className = "setting-description";
+    desc.textContent = entry.description;
+    info.append(desc);
+  }
+  const control = document.createElement("div");
+  control.className = "setting-control";
+  control.append(settingInput(entry));
+  const meta = document.createElement("div");
+  meta.className = "setting-meta";
+  const source = document.createElement("span");
+  source.className = entry.env_override ? "env" : "";
+  source.textContent = entry.env_override ? "环境变量覆盖 · 只读" : entry.source;
+  meta.append(source);
+  const effect = document.createElement("span");
+  effect.className = entry.restart_required ? "restart" : "";
+  effect.textContent = entry.restart_required ? "修改后重启生效" : "保存后热更新";
+  meta.append(effect);
+  control.append(meta);
+  row.append(info, control);
+  return row;
+}
+
+async function loadSettings() {
+  const root = $("settingsGroups");
+  try {
+    const data = await api("/api/settings");
+    state.settings.entries = data.entries || [];
+    state.settings.dirty.clear();
+    root.replaceChildren();
+    for (const category of data.categories || []) {
+      const entries = state.settings.entries.filter((entry) => entry.category === category);
+      const group = document.createElement("details");
+      group.className = "settings-group";
+      group.open = category === "群聊" || category === "人设与提示词";
+      const summary = document.createElement("summary");
+      summary.textContent = category + " · " + entries.length + " 项";
+      group.append(summary);
+      for (const entry of entries) group.append(settingRow(entry));
+      root.append(group);
+    }
+    $("settingsMeta").textContent = state.settings.entries.length + " 项配置";
+  } catch (err) {
+    root.replaceChildren(emptyRow(err.message));
+    toast(err.message, "bad");
+  }
+}
+
+async function saveSettings() {
+  const values = {};
+  for (const key of state.settings.dirty) {
+    const entry = state.settings.entries.find((item) => item.key === key);
+    const field = document.querySelector(".setting-input[data-key=\"" + key.replaceAll('"', '\\"') + "\"]");
+    if (!entry || !field || field.disabled || (entry.secret && !field.value)) continue;
+    try {
+      if (entry.type === "bool") values[key] = field.checked;
+      else if (entry.type === "int") values[key] = Number.parseInt(field.value, 10);
+      else if (entry.type === "float") values[key] = Number(field.value);
+      else if (["list", "dict"].includes(entry.type) || entry.type === "null") values[key] = JSON.parse(field.value);
+      else values[key] = field.value;
+      if (["int", "float"].includes(entry.type) && !Number.isFinite(values[key])) throw new Error(key + " 需要有效数字");
+    } catch (err) { toast(err.message || (key + " 的 JSON 格式不正确"), "bad"); return; }
+  }
+  if (!Object.keys(values).length) { toast("没有可保存的修改", "bad"); return; }
+  $("settingsSave").disabled = true;
+  try {
+    const result = await api("/api/settings", { method: "POST", body: { values } });
+    toast(result.message || "设置已保存", "good");
+    await loadSettings();
+  } catch (err) { toast(err.message, "bad"); }
+  finally { $("settingsSave").disabled = false; }
+}
+
+$("settingsRefresh").addEventListener("click", loadSettings);
+$("settingsSave").addEventListener("click", saveSettings);
+$("settingsSearch").addEventListener("input", () => {
+  const query = $("settingsSearch").value.trim().toLowerCase();
+  for (const row of document.querySelectorAll(".setting-row")) row.hidden = Boolean(query) && !row.dataset.search.includes(query);
+  for (const group of document.querySelectorAll(".settings-group")) {
+    const visible = [...group.querySelectorAll(".setting-row")].some((row) => !row.hidden);
+    group.hidden = !visible;
+    if (query && visible) group.open = true;
+  }
+});
 
 /* ── 聊天 ───────────────────────────────────────────── */
 function addBubble(text, kind) {

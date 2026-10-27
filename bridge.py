@@ -512,13 +512,12 @@ class Bridge:
     # ---- 主动调度（委托 proactive.py） ----
 
     async def proactive_loop(self) -> None:
-        interval = float(self.cfg.get("proactive_check_interval_sec", 60))
         while True:
             try:
                 await self._proactive_tick()
             except Exception:
                 logging.exception("主动调度检查失败")
-            await asyncio.sleep(interval)
+            await asyncio.sleep(float(self.cfg.get("proactive_check_interval_sec", 60)))
 
     async def _proactive_tick(self, now: dt.datetime | None = None) -> None:
         await proactive_tick(self, now=now)
@@ -564,13 +563,12 @@ class Bridge:
     # ---- 文件通道（委托 bridge_io.py） ----
 
     async def outbox_loop(self) -> None:
-        interval = float(self.cfg.get("outbox_check_interval_sec", 5))
         while True:
             try:
                 await self._flush_outbox()
             except Exception:
                 logging.exception("outbox 发送检查失败")
-            await asyncio.sleep(interval)
+            await asyncio.sleep(float(self.cfg.get("outbox_check_interval_sec", 5)))
 
     async def _flush_outbox(self) -> None:
         await bridge_io.flush_outbox(self)
