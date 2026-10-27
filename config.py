@@ -43,8 +43,8 @@ DEFAULTS: dict[str, Any] = {
     "group_full_access_qq": [],  # 群里可用命令执行与文件读写的成员，留空 = 沿用 full_access_qq
     "group_memory_enabled": False,  # 群聊是否读写长期记忆；默认关，避免群内容污染主人记忆库
     "group_reply_at": False,  # 群回复时是否 @ 提问者
-    "group_reply_without_at": False,  # 是否允许不 @ 机器人时随机插话
-    "group_reply_trigger_level": 20,  # 非 @ 消息触发回复的概率（0-100）；仅在上项开启时生效
+    "group_reply_without_at": False,  # 是否允许非 @ 消息抽样触发；模型仍可选择不插话
+    "group_reply_trigger_level": 20,  # 非 @ 消息触发模型的概率（0-100）；仅在上项开启时生效
     "group_rate_limit_per_min": 0,  # 每群每分钟回复上限；0 = 不限
     "group_forward_enabled": True,  # 群里是否允许合并转发长回复
     "group_command_hint": "群里暂不支持命令，可以私聊我",  # 群里被 @ 且发命令时的提示；留空 = 静默忽略

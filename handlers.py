@@ -454,16 +454,21 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         if getattr(buf, "triggered_by_mention", True)
         else f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）的普通发言触发；你是看到话题后随机决定插话的。"
     )
+    if getattr(buf, "triggered_by_mention", True):
+        reply_guidance = (
+            "这是明确发给你的问题或请求：优先回答触发 @ 的成员，群里其他消息只作背景。"
+            "可以自然称呼对方或引用其发言，回复要让整个群都看得懂；不要泛化成公告。\n"
+        )
+    else:
+        reply_guidance = (
+            "这是群友的普通发言，不是专门问你。你可以根据上下文自然接梗、补充或轻松互动；"
+            "如果没有自然切入点，按后文约定输出 [不插话]。不要假装对方在向你提问，也不要把回复写成公告。\n"
+        )
     prompt += (
         "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
         f"当前群号 {buf.group_id}，上面每条消息前都标了发言人。"
         + trigger_context
-        + (
-            "请把群里已有上下文当作共同背景，需要时再引用；本轮先针对这位提问者的具体问题或请求回答，"
-            "可自然称呼对方或引用其发言，同时让回复在群里公开可读。"
-            "如果缓冲中有多位成员发言，以最后一位触发本轮的人为当前主要回应对象，其他发言只作背景。"
-            "不要把回复泛化成面向所有人的公告，也不要忽略提问者只做群聊气氛总结。\n"
-        )
+        + reply_guidance
     )
     if not getattr(buf, "triggered_by_mention", True):
         prompt += (
@@ -471,7 +476,7 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             "如果没有自然、有趣或有帮助的切入点，只输出 [不插话]，不要勉强回复。\n"
         )
 
-    # 未 @ 机器人的群聊不会触发模型，但仍保存在 StateDB；在被 @ 时提供近期群聊背景。
+    # 普通群聊默认只保存到 StateDB；被 @ 或抽样触发时提供近期群聊背景。
     # 被 @ 的历史轮次已经在共用的 Agent 线程中，避免再重复注入一遍。
     state_db = getattr(bridge, "state_db", None)
     if state_db is not None:
@@ -491,10 +496,17 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             if len(history) > 5000:
                 history = history[-5000:]
             if history:
+                background_instruction = (
+                    "不要逐条复述背景；优先回应本轮 @ 你的具体问题。"
+                    if getattr(buf, "triggered_by_mention", True)
+                    else "不要逐条复述背景；只在有自然切入点时接话，不值得回应就输出 [不插话]。"
+                )
                 prompt += (
                     "\n【群聊近期背景，仅供需要时参考】\n"
                     + history
-                    + "\n【背景结束】不要逐条复述背景；优先回答本轮 @ 你的提问。\n"
+                    + "\n【背景结束】"
+                    + background_instruction
+                    + "\n"
                 )
         except Exception:
             logging.warning("读取群聊背景失败：%s", buf.group_id, exc_info=True)
@@ -524,7 +536,8 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         )
     except AgentError as exc:
         logging.error("群聊模型调用失败：%s", exc)
-        await bridge._send_private(session_key, "……刚才没接上，再说一次？")
+        if getattr(buf, "triggered_by_mention", True):
+            await bridge._send_private(session_key, "……刚才没接上，再说一次？")
         return
 
     if new_thread_id:

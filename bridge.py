@@ -283,7 +283,7 @@ class Bridge:
         return info
 
     async def _handle_group_event(self, info: dict[str, Any]) -> None:
-        """群消息写入整群上下文；只有 @ 机器人的消息进入模型缓冲。
+        """群消息写入整群上下文；@ 消息必定进入缓冲，普通消息按配置抽样进入。
 
         与私聊的关键差异：不碰 pending / 主控转交 / feedback 日志 ——
         这几处都是全局单文件状态，群消息流进去会吞掉主人的待确认回复。
@@ -324,6 +324,9 @@ class Bridge:
         mentioned = bool(info.get("mentioned_bot"))
         if not mentioned:
             if not self.cfg.get("group_reply_without_at", False):
+                return
+            # 命令仍只对 @ 触发，避免随机抽中后把非 @ 命令当作聊天回复。
+            if str(info.get("text") or "").lstrip().startswith("/"):
                 return
             try:
                 trigger_level = max(0, min(100, int(self.cfg.get("group_reply_trigger_level", 20))))

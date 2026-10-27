@@ -31,7 +31,8 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         "让助手在 QQ 群里也能说话。默认关闭；开启后私聊行为不受影响。",
         [
             "group_enabled", "group_whitelist", "group_full_access_qq",
-            "group_memory_enabled", "group_reply_at", "group_rate_limit_per_min",
+            "group_memory_enabled", "group_reply_at", "group_reply_without_at",
+            "group_reply_trigger_level", "group_rate_limit_per_min",
             "group_forward_enabled", "group_command_hint",
         ],
     ),
@@ -215,6 +216,8 @@ DESCRIPTIONS: dict[str, str] = {
     "group_full_access_qq": "群里允许使用命令执行与文件读写的成员；留空 = 沿用 `full_access_qq`",
     "group_memory_enabled": "群聊是否读写长期记忆。默认关闭，避免群内容污染主人的记忆库",
     "group_reply_at": "群回复时是否先 @ 提问者（会多一条 @ 消息）",
+    "group_reply_without_at": "是否抽样让模型考虑普通群消息；触发后模型可按语境接话或不插话，默认关闭",
+    "group_reply_trigger_level": "非 @ 消息触发模型的概率，0–100；默认 20，仅 `group_reply_without_at` 开启时生效",
     "group_rate_limit_per_min": "每群每分钟最多回复多少条；0 = 不限。群人多时建议设 3–5",
     "group_forward_enabled": "群里是否允许把长回复合并转发（NapCat 拒绝时自动回退为分条发送）",
     "group_command_hint": "群里被 @ 且发命令时的提示语；留空 = 静默忽略。群聊暂不支持命令",
