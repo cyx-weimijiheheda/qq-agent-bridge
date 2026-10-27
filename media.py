@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from file_utils import download_file, safe_filename, save_base64_data
+from targets import parse_key, to_id
 from vision_client import download_image
 
 
@@ -49,42 +50,68 @@ async def call_action(
     return response.get("data") or {}
 
 
-async def send_private_file(bridge: Any, user_id: str, target: str, name: str) -> None:
-    try:
-        user_id_num = int(user_id)
-    except ValueError:
-        user_id_num = user_id
+async def send_file(bridge: Any, target: str, file_target: str, name: str) -> None:
+    """发送文件；群聊走 upload_group_file，私聊走 upload_private_file。
+
+    群文件上传需要 folder 参数，传 "/" 落到群文件根目录。
+    """
+    scene, raw_id = parse_key(target)
     if not name.strip():
-        name = Path(target.split("?")[0]).name or "file"
-    if re.match(r"^https?://", target, re.IGNORECASE):
-        upload_target = target
+        name = Path(file_target.split("?")[0]).name or "file"
+    if re.match(r"^https?://", file_target, re.IGNORECASE):
+        upload_target = file_target
     else:
-        source = Path(target)
+        source = Path(file_target)
         if not source.is_file():
             raise FileNotFoundError(f"文件不存在：{source}")
         raw = await asyncio.to_thread(source.read_bytes)
         upload_target = "base64://" + base64.b64encode(raw).decode("ascii")
-    await bridge._call_action(
-        "upload_private_file",
-        {"user_id": user_id_num, "file": upload_target, "name": name},
-        timeout=120,
-    )
-    logging.info("文件已发送给 %s：%s（%s）", user_id, name, target)
+    if scene == "group":
+        await bridge._call_action(
+            "upload_group_file",
+            {
+                "group_id": to_id(raw_id),
+                "file": upload_target,
+                "name": name,
+                "folder": "/",
+            },
+            timeout=120,
+        )
+    else:
+        await bridge._call_action(
+            "upload_private_file",
+            {"user_id": to_id(raw_id), "file": upload_target, "name": name},
+            timeout=120,
+        )
+    logging.info("文件已发送到 %s：%s（%s）", target, name, file_target)
 
 
-async def send_private_segments(bridge: Any, user_id: str, segments: list[dict[str, Any]]) -> None:
+send_private_file = send_file  # 兼容旧名
+
+
+async def send_segments(bridge: Any, target: str, segments: list[dict[str, Any]]) -> None:
+    """发送消息段数组；按会话键自动选择群聊或私聊接口。
+
+    图片、视频、表情（face/mface）全部经由这里，改这一处即覆盖所有媒体类型。
+    """
     if bridge.ws is None:
         raise ConnectionError("WebSocket 未连接")
-    try:
-        user_id_num = int(user_id)
-    except ValueError:
-        user_id_num = user_id
-    payload = {
-        "action": "send_private_msg",
-        "params": {"user_id": user_id_num, "message": segments},
-    }
+    scene, raw_id = parse_key(target)
+    if scene == "group":
+        payload = {
+            "action": "send_group_msg",
+            "params": {"group_id": to_id(raw_id), "message": segments},
+        }
+    else:
+        payload = {
+            "action": "send_private_msg",
+            "params": {"user_id": to_id(raw_id), "message": segments},
+        }
     await bridge.ws.send(json.dumps(payload, ensure_ascii=False))
-    logging.info("已发送给 %s：%s", user_id, segments[0]["type"])
+    logging.info("已发送到 %s（%s）：%s", target, scene, segments[0]["type"])
+
+
+send_private_segments = send_segments  # 兼容旧名
 
 
 async def send_private_face(bridge: Any, user_id: str, face_id: str) -> None:
@@ -139,20 +166,24 @@ async def send_private_video(bridge: Any, user_id: str, target: str, name: str =
     logging.info("视频已发送给 %s：%s", user_id, name or target)
 
 
-async def send_private_record(bridge: Any, user_id: str, path: str) -> None:
-    try:
-        user_id_num = int(user_id)
-    except ValueError:
-        user_id_num = user_id
-    await bridge._call_action(
-        "send_private_msg",
-        {
-            "user_id": user_id_num,
-            "message": [{"type": "record", "data": {"file": path}}],
-        },
-        timeout=60,
-    )
-    logging.info("语音已发送给 %s", user_id)
+async def send_record(bridge: Any, target: str, path: str) -> None:
+    """发送语音条；按会话键选择群聊或私聊接口。
+
+    与文本发送一致地保留「请求-响应」语义，便于把失败暴露到日志。
+    """
+    scene, raw_id = parse_key(target)
+    segment = [{"type": "record", "data": {"file": path}}]
+    if scene == "group":
+        action = "send_group_msg"
+        params: dict[str, Any] = {"group_id": to_id(raw_id), "message": segment}
+    else:
+        action = "send_private_msg"
+        params = {"user_id": to_id(raw_id), "message": segment}
+    await bridge._call_action(action, params, timeout=60)
+    logging.info("语音已发送到 %s", target)
+
+
+send_private_record = send_record  # 兼容旧名
 
 
 async def send_media_marker(bridge: Any, user_id: str, marker: dict[str, str]) -> None:
@@ -278,7 +309,13 @@ async def _download_or_copy(bridge: Any, url: str, name: str = "") -> str:
     raise FileNotFoundError(f"URL 不可下载：{url}")
 
 
-async def download_incoming_file(bridge: Any, file: dict[str, str]) -> str:
+async def download_incoming_file(
+    bridge: Any, file: dict[str, str], group_id: str = ""
+) -> str:
+    """下载收到的文件。
+
+    群文件的 file_id 与私聊不通用，必须走 get_group_file_url 并带上群号。
+    """
     url = file.get("url") or ""
     name = file.get("name") or ""
     file_id = file.get("file_id") or file.get("file") or ""
@@ -286,9 +323,16 @@ async def download_incoming_file(bridge: Any, file: dict[str, str]) -> str:
         return await _download_or_copy(bridge, url, name)
     if file_id:
         try:
-            data = await bridge._call_action(
-                "get_private_file_url", {"file_id": file_id}, timeout=60
-            )
+            if group_id:
+                data = await bridge._call_action(
+                    "get_group_file_url",
+                    {"group_id": to_id(group_id), "file_id": file_id},
+                    timeout=60,
+                )
+            else:
+                data = await bridge._call_action(
+                    "get_private_file_url", {"file_id": file_id}, timeout=60
+                )
             url = str(data.get("url") or "")
             if url:
                 return await _download_or_copy(bridge, url, name or str(data.get("name") or ""))

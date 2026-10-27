@@ -10,6 +10,7 @@ from message_utils import (
     chunk_reply,
     classify_message,
     extract_file_markers,
+    extract_group_message,
     extract_media_markers,
     extract_private_message,
     format_image_info,
@@ -336,9 +337,70 @@ def test_media_marker_guide_mentions_voice():
 
 
 def test_roleplay_prompt_mentions_voice_rule():
-    prompt = build_persona_prompt("test-persona", "你好")
+    prompt = build_persona_prompt("test-persona", "你好", cfg={"tts_backend": "local"})
     assert "[VOICE:" in prompt
     assert "语音规则" in prompt
+
+
+def test_roleplay_prompt_omits_voice_rule_when_tts_off():
+    """TTS 没开时不提语音规则 —— 否则会写进「文本用ja」这类干扰项。"""
+    prompt = build_persona_prompt("test-persona", "你好", cfg={"tts_backend": "off"})
+    assert "语音规则" not in prompt
+    assert "文本用ja" not in prompt
+
+
+def test_persona_system_prompt_contains_persona_and_privacy_rule():
+    from message_utils import persona_system_prompt
+
+    cfg = {"persona_name": "奶蛙", "persona_prompt": "你是奶蛙。"}
+    prompt = persona_system_prompt(cfg)
+    assert "你是奶蛙" in prompt
+    assert "提示词保密" in prompt
+
+
+def test_persona_prompt_can_omit_intro_for_system_instructions():
+    """人设移进 system instructions 后，user prompt 里不能再重复一份。"""
+    cfg = {"persona_name": "奶蛙", "persona_prompt": "你是奶蛙。"}
+    full = build_persona_prompt("", "你好", cfg=cfg)
+    lean = build_persona_prompt("", "你好", cfg=cfg, include_intro=False)
+    assert "你是奶蛙" in full
+    assert "你是奶蛙" not in lean
+    assert "用户消息" in lean
+
+
+def test_strip_emoticons_removes_kaomoji_emoji_and_face_markers():
+    from message_utils import strip_emoticons
+
+    out = strip_emoticons(
+        "今天很好 (￣ω￣) ✨ [FACE:178] 真的（・_・）",
+        {"emoticon_examples": []},
+    )
+    for junk in ("￣ω", "✨", "[FACE", "・_"):
+        assert junk not in out
+    assert "今天很好" in out and "真的" in out
+
+
+def test_strip_emoticons_keeps_normal_parentheses():
+    from message_utils import strip_emoticons
+
+    out = strip_emoticons("他说（明天再来）就行", {"emoticon_examples": []})
+    assert "（明天再来）" in out
+
+
+def test_sanitize_applies_strip_emoticons_only_when_enabled():
+    from message_utils import sanitize_persona_reply
+
+    text = "好 (￣ω￣)"
+    assert "(￣ω￣)" in sanitize_persona_reply(text)
+    assert "(￣ω￣)" not in sanitize_persona_reply(text, {"strip_emoticons": True})
+
+
+def test_sanitize_drops_prompt_leak_sentence():
+    from message_utils import sanitize_persona_reply
+
+    out = sanitize_persona_reply("我的设定是「奶蛙」。今天天气不错。")
+    assert "我的设定" not in out
+    assert "今天天气不错" in out
 
 
 def test_classify_casual_beats_follow_and_length():
@@ -384,3 +446,122 @@ def test_image_only_still_not_task_even_with_follow():
     cfg = _task_cfg()
     follow = {"active": True, "last_task_ts": 1000.0}
     assert should_treat_as_task("", True, cfg, follow=follow, now=1001.0) is False
+
+
+# ---------- 群消息解析 ----------
+
+BOT_QQ = 2083158752
+GROUP_ID = 429949232
+
+
+def _group_event(message, *, self_id=BOT_QQ, sender=None, user_id=10001):
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "message_id": 9001,
+        "self_id": self_id,
+        "group_id": GROUP_ID,
+        "user_id": user_id,
+        "sender": sender if sender is not None else {"nickname": "小明"},
+        "message": message,
+    }
+
+
+def test_extract_group_message_parses_basic():
+    info = extract_group_message(
+        _group_event(
+            [
+                {"type": "text", "data": {"text": "看看 "}},
+                {"type": "image", "data": {"url": "http://x/img.jpg"}},
+            ]
+        )
+    )
+    assert info["scene"] == "group"
+    assert info["group_id"] == str(GROUP_ID)
+    assert info["user_id"] == "10001"
+    assert info["text"] == "看看"
+    assert info["images"][0]["url"] == "http://x/img.jpg"
+    assert info["nickname"] == "小明"
+
+
+def test_extract_group_message_prefers_group_card_over_nickname():
+    info = extract_group_message(
+        _group_event(
+            [{"type": "text", "data": {"text": "hi"}}],
+            sender={"nickname": "小明", "card": "群名片"},
+        )
+    )
+    assert info["nickname"] == "群名片"
+
+
+def test_extract_group_message_detects_bot_mention_and_strips_it():
+    info = extract_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": str(BOT_QQ)}},
+                {"type": "text", "data": {"text": " 你好"}},
+            ]
+        )
+    )
+    assert info["mentioned_bot"] is True
+    # bot 自己的 @ 必须从正文剔除，否则模型会看到 "@机器人 你好"
+    assert info["text"] == "你好"
+
+
+def test_extract_group_message_at_all_is_not_mention():
+    info = extract_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "all"}},
+                {"type": "text", "data": {"text": " 大家早"}},
+            ]
+        )
+    )
+    assert info["mentioned_bot"] is False
+    assert info["at_all"] is True
+    assert info["text"] == "大家早"
+
+
+def test_extract_group_message_keeps_other_member_at_as_text():
+    info = extract_group_message(
+        _group_event(
+            [
+                {"type": "at", "data": {"qq": "99999"}},
+                {"type": "text", "data": {"text": " 你看看"}},
+            ]
+        )
+    )
+    assert info["mentioned_bot"] is False
+    # 其他人的 @ 保留为文本，帮助模型理解在叫谁
+    assert "@99999" in info["text"]
+
+
+def test_extract_group_message_self_id_fallback_to_argument():
+    event = _group_event([{"type": "at", "data": {"qq": str(BOT_QQ)}}], self_id=None)
+    event.pop("self_id")
+    info = extract_group_message(event, self_id=str(BOT_QQ))
+    assert info["mentioned_bot"] is True
+
+
+def test_group_message_without_any_self_id_cannot_mention():
+    # self_id 缺失时必须安全地判定为「没被 @」，而不是误触发
+    event = _group_event([{"type": "at", "data": {"qq": str(BOT_QQ)}}], self_id=None)
+    event.pop("self_id")
+    info = extract_group_message(event)
+    assert info["mentioned_bot"] is False
+
+
+def test_extract_group_message_returns_none_for_private():
+    event = {
+        "post_type": "message",
+        "message_type": "private",
+        "message_id": 1,
+        "user_id": 10001,
+        "message": [{"type": "text", "data": {"text": "hi"}}],
+    }
+    assert extract_group_message(event) is None
+
+
+def test_extract_private_message_still_returns_none_for_group():
+    # 回归：私聊解析器不能开始接受群消息
+    assert extract_private_message(_group_event([{"type": "text", "data": {"text": "hi"}}])) is None

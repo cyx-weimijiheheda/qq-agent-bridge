@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -34,6 +35,17 @@ DEFAULTS: dict[str, Any] = {
     "onebot_ws_url": "ws://127.0.0.1:3001",
     # 允许使用机器人全部权限的 QQ 号（必填）；留空会启动失败并给出提示
     "full_access_qq": [],
+    # 机器人自身 QQ 号；群聊 @ 检测的兜底（事件里没带 self_id 时用它）
+    "self_id": "",
+    # ---------- 群聊（默认关闭，开启后私聊行为不受影响）----------
+    "group_enabled": False,  # 群聊总开关；关闭时群消息完全不处理
+    "group_whitelist": [],  # 生效的群号，留空 = 不限制
+    "group_full_access_qq": [],  # 群里可用命令执行与文件读写的成员，留空 = 沿用 full_access_qq
+    "group_memory_enabled": False,  # 群聊是否读写长期记忆；默认关，避免群内容污染主人记忆库
+    "group_reply_at": False,  # 群回复时是否 @ 提问者
+    "group_rate_limit_per_min": 0,  # 每群每分钟回复上限；0 = 不限
+    "group_forward_enabled": True,  # 群里是否允许合并转发长回复
+    "group_command_hint": "群里暂不支持命令，可以私聊我",  # 群里被 @ 且发命令时的提示；留空 = 静默忽略
     # ---------- 数据目录 ----------
     # 状态数据目录（日志 / SQLite / 会话 / 记忆）。留空 = 项目下的 data/
     "data_dir": "data",
@@ -73,6 +85,8 @@ DEFAULTS: dict[str, Any] = {
     # ---------- 人格设定（留空 = 普通中文助手）----------
     "persona_name": "",  # 助手自称，例如“小助手”
     "persona_prompt": "",  # 人设描述，例如“说话简短、先给结论”
+    # 人设写长文档时放在这个文件里，启动时读入 persona_prompt（persona_prompt 非空则优先）
+    "persona_prompt_file": "",
     "persona_skill_home": "~/.agents/skills",  # 技能目录根，persona_skill 从这里找
     "persona_enabled": True,  # 是否启用"人格模式"
     "persona_skill": "",  # 填技能名则提示模型先读 <persona_skill_home>/<技能>/SKILL.md
@@ -91,6 +105,8 @@ DEFAULTS: dict[str, Any] = {
     "media_marker_guide": "",
     "proactive_topic_guide": "",
     "emoticon_examples": ["(・_・)", "(￣▽￣)", "(._.)", "(￣ω￣)", "(。-ω-)zzz"],
+    # 发送前确定性地删掉颜文字、emoji 与 [FACE:...]/[MFACE:...] 标记
+    "strip_emoticons": False,
     # 想让模型用某个"找图"工具时填工具名（需自己在 agent_client 里注册）；留空则不提示
     "image_search_tool": "",
     # 自定义技能触发：命中关键词时在提示词里追加技能提示
@@ -247,6 +263,8 @@ DEFAULTS: dict[str, Any] = {
     "web_host": "127.0.0.1",
     "web_port": 8080,
     "web_token": "",
+    # 来自本机回环地址的请求免 token（远程访问仍需）。默认关闭，按需打开
+    "web_local_no_token": False,
     # ---------- 发送 / 日志 ----------
     "chunk_limit": 3800,
     "chunk_delay_sec": 0.5,
@@ -256,6 +274,8 @@ DEFAULTS: dict[str, Any] = {
     "forward_sender_uin": "10000",
     "log_file": "bridge.log",
     "log_level": "INFO",
+    "log_max_bytes": 5 * 1024 * 1024,  # 单个日志文件多大后轮转（字节）；0 = 不轮转
+    "log_backup_count": 3,  # 轮转后保留的历史日志份数（bridge.log.1、.2 …）；0 = 不保留
 }
 
 #: 需要按路径展开的键（相对路径 → 相对 data_dir / 项目目录）
@@ -327,6 +347,7 @@ _DATA_PATH_KEYS: tuple[str, ...] = (
 #: 项目内目录：相对路径 → 相对项目目录（channels / outbox 等需要固定位置）
 _PROJECT_PATH_KEYS: tuple[str, ...] = (
     "workdir",
+    "persona_prompt_file",
     "messages_dir",
     "to_qq_dir",
     "to_qq_sent_dir",
@@ -492,6 +513,12 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     cfg["_config_path"] = str(config_path) if config_path else ""
     cfg["_project_dir"] = str(PROJECT_DIR)
     cfg["full_access_qq"] = [str(item) for item in (cfg.get("full_access_qq") or [])]
+    cfg["group_whitelist"] = [str(item) for item in (cfg.get("group_whitelist") or [])]
+    cfg["group_full_access_qq"] = [
+        str(item) for item in (cfg.get("group_full_access_qq") or [])
+    ]
+    if cfg.get("self_id") is not None:
+        cfg["self_id"] = str(cfg.get("self_id") or "")
     if not cfg["full_access_qq"]:
         raise ValueError(
             "未配置允许使用的 QQ 号：请将 config.example.json 复制为 config.json，"
@@ -506,6 +533,17 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
                 "（config.json 或环境变量 QQBOT_WEB_TOKEN）"
             )
     cfg = _resolve_paths(cfg)
+    # 长人设放文件里：只有 persona_prompt 为空时才读，避免覆盖显式配置
+    prompt_file = str(cfg.get("persona_prompt_file") or "").strip()
+    if prompt_file and not str(cfg.get("persona_prompt") or "").strip():
+        path = Path(prompt_file)
+        if path.is_file():
+            try:
+                cfg["persona_prompt"] = path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logging.warning("读取 persona_prompt_file 失败：%s", exc)
+        else:
+            logging.warning("persona_prompt_file 不存在：%s", path)
     return cfg
 
 

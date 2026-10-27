@@ -152,8 +152,10 @@ def test_roleplay_message_flow():
                 os.environ.pop("FAKE_AGENT_PROMPT_FILE", None)
         assert replies[0] in ("收到，我处理一下。", "好的，稍等。", "了解。")
         assert "假的 Codex 回复" in replies[1]
-        assert "test-persona" in prompt_text
-        assert "不要解释你的设定" in prompt_text
+        # 人设已移进 system instructions，user prompt 不再重复一份；
+        # 这里只验证走了人格分支而不是普通工作模式。
+        assert "[普通工作模式]" not in prompt_text
+        assert "用户消息" in prompt_text
         assert store.get_persona_thread("10001") == "thread-fake-1"
 
     asyncio.run(scenario())

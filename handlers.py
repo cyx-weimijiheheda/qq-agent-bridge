@@ -361,7 +361,9 @@ async def _collect_file_infos(bridge: Any, buf: Any) -> list[str]:
     for file in buf.files:
         logging.info("收到文件：%s", file)
         try:
-            path = await bridge._download_incoming_file(file)
+            path = await bridge._download_incoming_file(
+                file, group_id=getattr(buf, "group_id", "") or ""
+            )
             size = Path(path).stat().st_size
             info = f"{path}（{file.get('name') or Path(path).name}，{size} 字节）"
             if bridge.cfg.get("pdf_ocr_enabled", True) and Path(path).suffix.lower() == ".pdf":
@@ -400,7 +402,134 @@ def _collect_sticker_infos(buf: Any) -> list[str]:
     return sticker_infos
 
 
+async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
+    """群聊精简流程：只走「人格对话 + 媒体收发」。
+
+    命令、插件、课表、任务判定与分阶段、记忆读写、主动消息一律不参与 ——
+    这些子系统的作用域仍是「单个主人」，群消息流进去会互相污染。
+    """
+    text = buf.compose()
+    # 命令检测必须看原始文本：compose() 在群聊里会给每条加「发言人：」前缀
+    raw_text = "\n".join(buf.texts).strip()
+    if not raw_text and not (buf.images or buf.videos or buf.files):
+        return
+
+    # 群里发命令不执行，只回一句提示（group_command_hint 置空则静默忽略）
+    if raw_text.startswith("/"):
+        hint = str(bridge.cfg.get("group_command_hint") or "")
+        if hint:
+            await bridge._send_private(session_key, hint)
+        return
+
+    if not bridge._group_rate_ok(session_key):
+        logging.info("群 %s 触发回复限流，跳过本次", session_key)
+        return
+
+    image_paths, descriptions = await _collect_images(
+        bridge, buf, bool(bridge.cfg.get("vision_native", True)), text
+    )
+    link_videos, link_video_errors = await _collect_link_videos(bridge, text)
+    all_videos = list(buf.videos) + link_videos
+    video_infos = await _collect_video_infos(bridge, all_videos)
+    for error in link_video_errors:
+        video_infos.append(f"（{error}）")
+    file_infos = await _collect_file_infos(bridge, buf)
+    sticker_infos = _collect_sticker_infos(buf)
+
+    prompt = build_persona_prompt(
+        bridge.cfg.get("persona_skill", ""),
+        text,
+        descriptions,
+        image_count=len(image_paths),
+        file_infos=file_infos,
+        sticker_infos=sticker_infos,
+        video_infos=video_infos or None,
+        casual_multipart=True,
+        memory_text="",  # 群聊不注入主人记忆
+        cfg=bridge.cfg,
+        include_intro=False,  # 人设走 system instructions，避免写进群会话历史
+    )
+    prompt += (
+        "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
+        f"当前群号 {buf.group_id}，上面每条消息前都标了发言人。"
+        f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）@ 你触发。"
+        "请把群里已有上下文当作共同背景，需要时再引用；本轮先针对这位提问者的具体问题或请求回答，"
+        "可自然称呼对方或引用其发言，同时让回复在群里公开可读。"
+        "如果缓冲中有多位成员发言，以最后一位 @ 你的人为当前主要回应对象，其他发言只作背景。"
+        "不要把回复泛化成面向所有人的公告，也不要忽略提问者只做群聊气氛总结。\n"
+    )
+
+    # 未 @ 机器人的群聊不会触发模型，但仍保存在 StateDB；在被 @ 时提供近期群聊背景。
+    # 被 @ 的历史轮次已经在共用的 Agent 线程中，避免再重复注入一遍。
+    state_db = getattr(bridge, "state_db", None)
+    if state_db is not None:
+        try:
+            rows = state_db.list_group_context_messages(
+                buf.group_id,
+                limit=100,
+                exclude_message_ids=set(getattr(buf, "message_ids", [])),
+                unmentioned_only=True,
+            )
+            lines = [
+                f"{row['nickname'] or row['user_id']}（QQ {row['user_id']}）：{row['text']}"
+                for row in rows
+                if str(row.get("text") or "").strip()
+            ][-40:]
+            history = "\n".join(lines)
+            if len(history) > 5000:
+                history = history[-5000:]
+            if history:
+                prompt += (
+                    "\n【群聊近期背景，仅供需要时参考】\n"
+                    + history
+                    + "\n【背景结束】不要逐条复述背景；优先回答本轮 @ 你的提问。\n"
+                )
+        except Exception:
+            logging.warning("读取群聊背景失败：%s", buf.group_id, exc_info=True)
+
+    # 每个群共用一个长期线程，让不同成员通过 @ 触发的发言进入同一群上下文。
+    # 成员资料仍单独记录；本轮回复对象由 buf.sender_id / sender_name 明确告诉模型。
+    context_key = session_key
+    if buf.sender_id:
+        state_db = getattr(bridge, "state_db", None)
+        if state_db is not None:
+            try:
+                state_db.touch_group_member(buf.group_id, buf.sender_id, buf.sender_name)
+            except Exception:
+                logging.warning("记录群成员失败：%s", buf.sender_id, exc_info=True)
+
+    thread_id = bridge.store.get_persona_thread(context_key)
+    try:
+        reply, new_thread_id = await run_with_policy(
+            bridge,
+            prompt,
+            thread_id,
+            resolve_policy(bridge.cfg, "casual"),
+            image_paths=image_paths or None,
+            full_access=bool(getattr(buf, "full_access", True)),
+            group=True,
+            persona=True,
+        )
+    except AgentError as exc:
+        logging.error("群聊模型调用失败：%s", exc)
+        await bridge._send_private(session_key, "……刚才没接上，再说一次？")
+        return
+
+    if new_thread_id:
+        bridge.store.set_persona_thread(context_key, new_thread_id)
+    reply = sanitize_persona_reply(reply, bridge.cfg)
+    if bridge.cfg.get("group_reply_at", False) and buf.sender_id:
+        # @ 必须在文本之前单独发一段，文本里没法表达 at 段
+        await bridge._send_private_segments(
+            session_key, [{"type": "at", "data": {"qq": str(buf.sender_id)}}]
+        )
+    await send_reply(bridge, session_key, reply, persona_mode=True, task_mode=False)
+
+
 async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
+    if getattr(buf, "scene", "private") == "group":
+        await process_group_buffer(bridge, user_id, buf)
+        return
     with bridge.store.batch():
         text = buf.compose()
         if bridge._pending_task_stage_waiting():
@@ -587,6 +716,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 memory_text=bridge._read_memory(),
                 image_suggestions=image_suggestions,
                 cfg=bridge.cfg,
+                include_intro=False,  # 人设走 system instructions
             )
             thread_id = bridge.store.get_persona_thread(user_id)
         else:
@@ -606,6 +736,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 thread_id,
                 resolve_policy(bridge.cfg, "task" if task_mode else "casual"),
                 image_paths=image_paths or None,
+                persona=persona_mode,
             )
         except AgentError as exc:
             fallback_model = str(bridge.cfg.get("fallback_model") or "").strip()
@@ -641,6 +772,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                         casual_multipart=not task_mode,
                         memory_text=bridge._read_memory(),
                         cfg=bridge.cfg,
+                        include_intro=False,
                     )
                 else:
                     fallback_prompt = _build_work_prompt(
@@ -669,6 +801,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                         resolve_policy(bridge.cfg, "task" if task_mode else "casual"),
                         model=fallback_model,
                         bypass_proxy=True,
+                        persona=persona_mode,
                     )
                 except AgentError as fallback_exc:
                     logging.error("兜底模型也失败：%s", fallback_exc)
@@ -704,7 +837,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
         if persona_mode:
             bridge.store.increment_persona_turns(user_id)
         if persona_mode:
-            reply = sanitize_persona_reply(reply)
+            reply = sanitize_persona_reply(reply, bridge.cfg)
         await send_reply(
             bridge,
             user_id,

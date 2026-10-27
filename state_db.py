@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,24 @@ CREATE TABLE IF NOT EXISTS jobs (
     last_run TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    nickname TEXT NOT NULL DEFAULT '',
+    last_seen_ts REAL NOT NULL DEFAULT 0,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS group_context (
+    group_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    nickname TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    mentioned_bot INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (group_id, message_id)
+);
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
@@ -55,6 +74,8 @@ CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
 CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id, done);
 CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs(enabled, next_run);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id, last_seen_ts);
+CREATE INDEX IF NOT EXISTS idx_group_context_recent ON group_context(group_id, created_at);
 """
 
 _TASK_FIELDS = {
@@ -104,6 +125,17 @@ class StateDB:
             self._conn.commit()
             return int(cur.lastrowid or 0)
 
+    def _changed(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """执行写操作并返回受影响行数。
+
+        变更类接口需要它判断「到底改到没有」：`_execute` 返回的是 lastrowid，
+        UPDATE / DELETE 拿不到有意义的值。
+        """
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return int(cur.rowcount)
+
     # ---- reminders ----
 
     def create_reminder(
@@ -131,11 +163,29 @@ class StateDB:
             (user_id,),
         )
 
-    def cancel_reminder(self, reminder_id: int) -> None:
-        self._execute("UPDATE reminders SET status = 'done' WHERE id = ?", (reminder_id,))
+    def get_reminder(self, reminder_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM reminders WHERE id = ?", (reminder_id,))
+        return rows[0] if rows else None
 
-    def mark_reminder_done(self, reminder_id: int) -> None:
-        self._execute("UPDATE reminders SET status='done' WHERE id = ?", (reminder_id,))
+    def cancel_reminder(self, reminder_id: int, user_id: str | None = None) -> bool:
+        """手动取消提醒，状态记为 `cancelled`（与「已触发完成」区分开）。
+
+        传 `user_id` 时把归属条件下推进 SQL，避免按 id 改到别人的数据。
+        """
+        sql = "UPDATE reminders SET status = 'cancelled' WHERE id = ?"
+        params: tuple[Any, ...] = (reminder_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
+
+    def mark_reminder_done(self, reminder_id: int, user_id: str | None = None) -> bool:
+        sql = "UPDATE reminders SET status = 'done' WHERE id = ?"
+        params: tuple[Any, ...] = (reminder_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
 
     def set_reminder_next(self, reminder_id: int, next_at: str) -> None:
         self._execute(
@@ -157,11 +207,25 @@ class StateDB:
             (user_id,),
         )
 
-    def complete_todo(self, todo_id: int) -> None:
-        self._execute("UPDATE todos SET done = 1 WHERE id = ?", (todo_id,))
+    def get_todo(self, todo_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM todos WHERE id = ?", (todo_id,))
+        return rows[0] if rows else None
 
-    def delete_todo(self, todo_id: int) -> None:
-        self._execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    def complete_todo(self, todo_id: int, user_id: str | None = None) -> bool:
+        sql = "UPDATE todos SET done = 1 WHERE id = ?"
+        params: tuple[Any, ...] = (todo_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
+
+    def delete_todo(self, todo_id: int, user_id: str | None = None) -> bool:
+        sql = "DELETE FROM todos WHERE id = ?"
+        params: tuple[Any, ...] = (todo_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
 
     # ---- scheduled jobs ----
 
@@ -212,6 +276,10 @@ class StateDB:
             (user_id, kind, prompt, status, _now_iso()),
         )
 
+    def get_task(self, task_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        return rows[0] if rows else None
+
     def update_task(self, task_id: int, **fields: Any) -> None:
         allowed = {k: v for k, v in fields.items() if k in _TASK_FIELDS}
         if not allowed:
@@ -229,6 +297,118 @@ class StateDB:
                 (user_id,),
             )
         return self._query("SELECT * FROM tasks ORDER BY id DESC")
+
+    def distinct_user_ids(self) -> list[str]:
+        """三张按用户归属的表里出现过的全部 user_id，供作用域切换器枚举。"""
+        rows = self._query(
+            "SELECT user_id FROM reminders"
+            " UNION SELECT user_id FROM todos"
+            " UNION SELECT user_id FROM tasks"
+            " ORDER BY user_id"
+        )
+        return [str(row["user_id"]) for row in rows]
+
+    # ---- 群成员目录与群级上下文 ----
+
+    def touch_group_member(
+        self,
+        group_id: str,
+        user_id: str,
+        nickname: str = "",
+        now: float | None = None,
+    ) -> None:
+        """记录群里出现过的成员；同一成员重复出现只累加计数与时间。"""
+        stamp = time.time() if now is None else float(now)
+        self._execute(
+            "INSERT INTO group_members"
+            " (group_id, user_id, nickname, last_seen_ts, message_count)"
+            " VALUES (?, ?, ?, ?, 1)"
+            " ON CONFLICT(group_id, user_id) DO UPDATE SET"
+            " nickname = CASE WHEN excluded.nickname <> ''"
+            "                 THEN excluded.nickname ELSE nickname END,"
+            " last_seen_ts = excluded.last_seen_ts,"
+            " message_count = message_count + 1",
+            (str(group_id), str(user_id), str(nickname or ""), stamp),
+        )
+
+    def list_group_members(self, group_id: str | None = None) -> list[dict[str, Any]]:
+        if group_id:
+            return self._query(
+                "SELECT * FROM group_members WHERE group_id = ?"
+                " ORDER BY last_seen_ts DESC",
+                (str(group_id),),
+            )
+        return self._query(
+            "SELECT * FROM group_members ORDER BY group_id, last_seen_ts DESC"
+        )
+
+    def get_group_member(self, group_id: str, user_id: str) -> dict[str, Any] | None:
+        rows = self._query(
+            "SELECT * FROM group_members WHERE group_id = ? AND user_id = ?",
+            (str(group_id), str(user_id)),
+        )
+        return rows[0] if rows else None
+
+    def add_group_context_message(
+        self,
+        group_id: str,
+        message_id: str,
+        user_id: str,
+        nickname: str,
+        text: str,
+        *,
+        mentioned_bot: bool = False,
+        created_at: float | None = None,
+    ) -> None:
+        """持久化群消息，供后续 @ 机器人时作为整群背景参考。"""
+        self._execute(
+            "INSERT OR IGNORE INTO group_context"
+            " (group_id, message_id, user_id, nickname, text, mentioned_bot, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(group_id),
+                str(message_id),
+                str(user_id),
+                str(nickname or ""),
+                str(text or ""),
+                int(bool(mentioned_bot)),
+                time.time() if created_at is None else float(created_at),
+            ),
+        )
+
+    def list_group_context_messages(
+        self,
+        group_id: str,
+        *,
+        limit: int = 80,
+        exclude_message_ids: set[str] | None = None,
+        unmentioned_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """返回最近群消息，按时间正序；当前缓冲中的消息可排除避免重复。"""
+        mentioned_filter = " AND mentioned_bot = 0" if unmentioned_only else ""
+        rows = self._query(
+            "SELECT group_id, message_id, user_id, nickname, text, mentioned_bot, created_at"
+            " FROM group_context WHERE group_id = ?"
+            + mentioned_filter
+            + " ORDER BY created_at DESC LIMIT ?",
+            (str(group_id), max(1, min(int(limit), 500))),
+        )
+        excluded = {str(item) for item in (exclude_message_ids or set())}
+        rows = [row for row in rows if str(row["message_id"]) not in excluded]
+        rows.reverse()
+        return rows
+
+    def list_group_context_groups(self) -> list[dict[str, Any]]:
+        return self._query(
+            "SELECT group_id, COUNT(*) AS message_count, MAX(created_at) AS last_seen_ts"
+            " FROM group_context GROUP BY group_id ORDER BY group_id"
+        )
+
+    def delete_group_context(self, group_id: str) -> int:
+        """永久删除指定群的原始消息上下文。"""
+        return self._changed(
+            "DELETE FROM group_context WHERE group_id = ?", (str(group_id),)
+        )
 
     # ---- knowledge base ----
 

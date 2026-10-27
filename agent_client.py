@@ -26,6 +26,7 @@ from agno.media import Image
 from agno.memory import MemoryManager
 from agno.models.openai import OpenAIChat
 
+from message_utils import persona_system_prompt
 from vision_client import BROWSER_UA
 
 # 所有外联都按“直连优先”设计。部分 HTTP 客户端会读取系统代理，
@@ -138,7 +139,7 @@ class AgentClient:
         # 需要走代理时把 config 里的 keep_proxy 打开（或设 QQBOT_KEEP_PROXY=1）。
         _purge_proxy_env(bool(cfg.get("keep_proxy", False)))
         self._http_client = httpx.AsyncClient(trust_env=False)
-        self._agents: dict[tuple[str, str, float], Agent] = {}
+        self._agents: dict[tuple[str, str, float, bool, bool], Agent] = {}
         self._memory_manager: MemoryManager | None = None
 
     # ---- 会话头：x-opencode-session（每个会话一个稳定 ID） ----
@@ -367,17 +368,23 @@ class AgentClient:
             logging.warning("技能工具加载失败：%s", exc)
             return []
 
-    def _build_tools(self) -> list[Any]:
+    def _build_tools(self, full_access: bool = True) -> list[Any]:
+        """组装工具集。
+
+        full_access=False 时**不装配** ShellTools 与 FileTools —— 模型实例里
+        根本没有这些工具，调用必然失败。这是群聊里限制非白名单成员唯一可靠的
+        拦截方式。搜索 / 知识库 / 技能属于只读信息查询，两档都保留。
+        """
         tools: list[Any] = []
         if self.cfg.get("tools_enabled", True):
-            if self.cfg.get("shell_enabled", True):
+            if full_access and self.cfg.get("shell_enabled", True):
                 try:
                     from agno.tools.shell import ShellTools
 
                     tools.append(ShellTools(base_dir=self._workdir))
                 except Exception as exc:
                     logging.warning("ShellTools 初始化失败：%s", exc)
-            if self.cfg.get("file_tools_enabled", True):
+            if full_access and self.cfg.get("file_tools_enabled", True):
                 try:
                     from agno.tools.file import FileTools
 
@@ -428,22 +435,39 @@ class AgentClient:
         model: str,
         reasoning_effort: str | None,
         timeout: float,
+        *,
+        full_access: bool = True,
+        group: bool = False,
+        persona: bool = False,
     ) -> Agent:
-        key = (model, reasoning_effort or "", timeout)
+        key = (model, reasoning_effort or "", timeout, full_access, group, persona)
         agent = self._agents.get(key)
         if agent is not None:
             return agent
+        # 群聊默认关闭长期记忆：否则群成员的对话会写进主人共享的记忆库，
+        # 主人的 memory.md 也会被注入到群里。
+        memory_on = bool(self.cfg.get("memory_enabled", True))
+        if group and not bool(self.cfg.get("group_memory_enabled", False)):
+            memory_on = False
         agent = Agent(
             model=self._make_model(model, reasoning_effort, timeout),
             db=self.db,
-            memory_manager=self._get_memory_manager(),
-            enable_agentic_memory=bool(self.cfg.get("memory_enabled", True)),
-            update_memory_on_run=bool(self.cfg.get("memory_auto_update", True)),
-            add_memories_to_context=bool(self.cfg.get("memory_in_chat", True)),
+            memory_manager=self._get_memory_manager() if memory_on else None,
+            enable_agentic_memory=memory_on,
+            update_memory_on_run=memory_on
+            and bool(self.cfg.get("memory_auto_update", True)),
+            add_memories_to_context=memory_on
+            and bool(self.cfg.get("memory_in_chat", True)),
             add_history_to_context=True,
             num_history_runs=int(self.cfg.get("history_turns", 20)),
-            tools=self._build_tools(),
-            instructions=TOOL_SAFETY_INSTRUCTIONS,
+            tools=self._build_tools(full_access),
+            # 人设放 system instructions：agno 会把 user prompt 写进会话历史，
+            # 整套人设若每轮都塞进 user prompt，下一轮就会在“对话”里看见提示词。
+            instructions=(
+                TOOL_SAFETY_INSTRUCTIONS + "\n\n" + persona_system_prompt(self.cfg)
+                if persona
+                else TOOL_SAFETY_INSTRUCTIONS
+            ),
             markdown=False,
         )
         self._agents[key] = agent
@@ -461,6 +485,9 @@ class AgentClient:
         model: str | None = None,
         model_provider: str | None = None,
         bypass_proxy: bool = False,
+        full_access: bool = True,
+        group: bool = False,
+        persona: bool = False,
     ) -> tuple[str, str | None]:
         del model_provider  # 服务商由 api_base_url 决定，参数保留仅为接口兼容
         del bypass_proxy  # 内置 HTTP 客户端默认不信任代理环境变量
@@ -470,15 +497,24 @@ class AgentClient:
         )
         effort = str(reasoning_effort or "").strip() or None
         session_id = str(thread_id or "").strip() or f"session-{uuid.uuid4().hex}"
-        agent = self._get_agent(model_name, effort, effective_timeout)
+        agent = self._get_agent(
+            model_name,
+            effort,
+            effective_timeout,
+            full_access=full_access,
+            group=group,
+            persona=persona,
+        )
         images = [Image(filepath=str(p)) for p in (image_paths or [])]
         # 每个会话一个稳定的 x-opencode-session：同一 thread 的多次请求用同一 ID
         agent.model.extra_headers = self._session_headers(session_id)
         logging.info(
-            "模型调用：model=%s timeout=%.0fs thread=%s",
+            "模型调用：model=%s timeout=%.0fs thread=%s 场景=%s 工具=%s",
             model_name,
             effective_timeout,
             session_id,
+            "群聊" if group else "私聊",
+            "完整" if full_access else "受限",
         )
         try:
             run_output = await asyncio.wait_for(

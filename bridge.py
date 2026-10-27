@@ -9,6 +9,7 @@ import shlex
 import sys
 import time
 from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,12 @@ import task_stage
 from agent_client import AgentClient, AgentError
 from call_policy import resolve_policy, run_with_policy
 from config import load_config
-from message_utils import extract_private_message, is_duplicate
+from message_utils import extract_group_message, extract_private_message, is_duplicate
 from proactive import proactive_tick, run_proactive, run_proactive_impl
 from scheduler import run_scheduler
 from sessions import SessionStore
 from state_db import StateDB
+from targets import group_key, parse_key, to_id
 from task_manager import TaskManager
 from tts_client import LocalGPTSoVITSClient
 from vision_client import build_vision_prompt, describe_image, vision_settings
@@ -35,9 +37,28 @@ from voice_sender import VoiceSender
 
 
 class MessageBuffer:
-    def __init__(self, user_id: str, cfg: dict[str, Any]):
+    def __init__(
+        self,
+        user_id: str,
+        cfg: dict[str, Any],
+        *,
+        scene: str = "private",
+        group_id: str = "",
+        sender_id: str = "",
+        sender_name: str = "",
+    ):
+        # user_id 的语义是「会话键」：私聊为裸 QQ 号，群聊为 g:<群号>（见 targets.py）
         self.user_id = user_id
         self.cfg = cfg
+        self.scene = scene
+        self.group_id = group_id
+        self.sender_id = sender_id
+        self.sender_name = sender_name
+        # 与 texts 平行，群聊里用于标注每条是谁说的
+        self.senders: list[str] = []
+        self.message_ids: list[str] = []
+        # 群聊里只要攒进了一条非白名单成员的消息，整批就降为受限工具档
+        self.full_access = True
         self.texts: list[str] = []
         self.images: list[dict[str, str]] = []
         self.videos: list[dict[str, str]] = []
@@ -48,9 +69,10 @@ class MessageBuffer:
         self.has_video = False
         self.deadline: float | None = None
 
-    def add_text(self, text: str) -> None:
+    def add_text(self, text: str, speaker: str = "") -> None:
         if text.strip():
             self.texts.append(text.strip())
+            self.senders.append(speaker)
 
     def add_image(self, image: dict[str, str]) -> None:
         self.images.append(image)
@@ -78,6 +100,13 @@ class MessageBuffer:
         self.deadline = loop.time() + self.delay()
 
     def compose(self) -> str:
+        """拼成交给模型的文本。群聊里给每条标注发言人，便于模型区分谁在说话。"""
+        if self.scene == "group" and any(self.senders):
+            lines = []
+            for idx, text in enumerate(self.texts):
+                speaker = self.senders[idx] if idx < len(self.senders) else ""
+                lines.append(f"{speaker}：{text}" if speaker else text)
+            return "\n".join(lines).strip()
         return "\n".join(self.texts).strip()
 
 
@@ -100,11 +129,15 @@ class Bridge:
         self.store = store
         self.agent = agent
         self.ws: Any = None
+        # 机器人自身 QQ：配置给初始值，收到带 self_id 的事件后以事件为准
+        self.self_id = str(cfg.get("self_id") or "")
         self.seen_ids: deque[str] = deque(maxlen=2000)
         self.buffers: dict[str, MessageBuffer] = {}
         self.buffer_tasks: dict[str, asyncio.Task[Any]] = {}
         self.pending_actions: dict[str, asyncio.Future[Any]] = {}
         self.web_replies: dict[str, asyncio.Queue[str | None]] = {}
+        # 群聊回复限流：会话键 -> 最近回复时间戳（秒，monotonic）
+        self.group_reply_times: dict[str, deque[float]] = {}
         self.tmp_dir = Path(__file__).resolve().parent / "tmp"
         self.tmp_dir.mkdir(exist_ok=True)
         self.incoming_dir = self.tmp_dir / "incoming"
@@ -215,9 +248,117 @@ class Bridge:
                 backoff = min(backoff * 2, 60)
 
     async def _on_event(self, event: dict[str, Any]) -> None:
+        # 群里 @ 检测要靠 self_id；事件带了就以事件为准
+        event_self_id = str(event.get("self_id") or "")
+        if event_self_id:
+            self.self_id = event_self_id
+
         info = extract_private_message(event)
-        if not info:
+        if info:
+            await self._handle_private_event(info)
             return
+        group_info = self._extract_group_event(event)
+        if group_info:
+            await self._handle_group_event(group_info)
+
+    def _extract_group_event(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        """群聊事件的准入判断；不满足条件的直接返回 None（完全不进 buffer）。
+
+        - 总开关关闭时一律忽略
+        - 所有群消息都允许进入群上下文存储；只有 @ 到机器人时才触发模型回复
+        - @全体成员不算机器人提及
+        - 配了群白名单时只处理白名单内的群
+        """
+        if not self.cfg.get("group_enabled", False):
+            return None
+        info = extract_group_message(event, self.self_id)
+        if not info:
+            return None
+        whitelist = self.cfg.get("group_whitelist") or []
+        if whitelist and info.get("group_id") not in whitelist:
+            logging.info("忽略未启用群聊的群：%s", info.get("group_id"))
+            return None
+        return info
+
+    async def _handle_group_event(self, info: dict[str, Any]) -> None:
+        """群消息写入整群上下文；只有 @ 机器人的消息进入模型缓冲。
+
+        与私聊的关键差异：不碰 pending / 主控转交 / feedback 日志 ——
+        这几处都是全局单文件状态，群消息流进去会吞掉主人的待确认回复。
+        """
+        if self.self_id and str(info.get("user_id") or "") == self.self_id:
+            return
+        message_id = str(info.get("message_id") or f"local-{time.time_ns()}")
+        info["message_id"] = message_id
+        if is_duplicate(message_id, self.seen_ids):
+            return
+        key = group_key(info["group_id"])
+        state_db = getattr(self, "state_db", None)
+        if state_db is not None:
+            try:
+                state_db.touch_group_member(info["group_id"], info["user_id"], info["nickname"])
+                context_text = str(info.get("text") or "")
+                for field, label in (("images", "图片"), ("videos", "视频"), ("files", "文件")):
+                    if info.get(field):
+                        context_text = (context_text + " " if context_text else "") + f"[{label}]"
+                for field in ("faces", "mfaces"):
+                    if info.get(field):
+                        context_text = (context_text + " " if context_text else "") + "[表情]"
+                state_db.add_group_context_message(
+                    info["group_id"],
+                    message_id,
+                    info["user_id"],
+                    info["nickname"],
+                    context_text,
+                    mentioned_bot=bool(info.get("mentioned_bot")),
+                )
+            except Exception:
+                logging.warning(
+                    "记录群上下文失败：group=%s message=%s",
+                    info.get("group_id"),
+                    message_id,
+                    exc_info=True,
+                )
+        if not info.get("mentioned_bot"):
+            return
+        allowed = set(self.cfg.get("group_full_access_qq") or self.cfg["full_access_qq"])
+        buf = self.buffers.get(key)
+        if buf is None:
+            buf = MessageBuffer(
+                key,
+                self.cfg,
+                scene="group",
+                group_id=info["group_id"],
+                sender_id=info["user_id"],
+                sender_name=info["nickname"],
+            )
+            self.buffers[key] = buf
+        buf.sender_id = info["user_id"]
+        buf.sender_name = info["nickname"]
+        buf.message_ids.append(message_id)
+        # 攒进一条非白名单成员的消息，整批就降为受限工具档
+        buf.full_access = buf.full_access and info["user_id"] in allowed
+        if info["text"]:
+            speaker = info["nickname"] or info["user_id"]
+            buf.add_text(info["text"], speaker=f"{speaker}（QQ {info['user_id']}）")
+        for image in info["images"]:
+            buf.add_image(image)
+        for video in info["videos"]:
+            buf.add_video(video)
+        for file in info["files"]:
+            buf.add_file(file)
+        for face in info["faces"]:
+            buf.add_face(face)
+        for mface in info["mfaces"]:
+            buf.add_mface(mface)
+        buf.reset_deadline(asyncio.get_running_loop())
+        task = self.buffer_tasks.get(key)
+        if task is None or task.done():
+            self.buffer_tasks[key] = asyncio.create_task(
+                self._wait_and_process(key, buf)
+            )
+
+    async def _handle_private_event(self, info: dict[str, Any]) -> None:
         if info["user_id"] not in self.cfg["full_access_qq"]:
             logging.info("忽略非白名单 QQ：%s", info["user_id"])
             return
@@ -284,11 +425,17 @@ class Bridge:
         model: str | None = None,
         model_provider: str | None = None,
         bypass_proxy: bool = False,
+        full_access: bool = True,
+        group: bool = False,
+        persona: bool = False,
     ) -> tuple[str, str | None]:
         kwargs: dict[str, Any] = {
             "reasoning_effort": reasoning_effort,
             "timeout": timeout,
             "image_paths": image_paths,
+            "full_access": full_access,
+            "group": group,
+            "persona": persona,
         }
         if model is not None:
             kwargs["model"] = model
@@ -343,8 +490,10 @@ class Bridge:
     async def _send_media_marker(self, user_id: str, marker: dict[str, str]) -> None:
         await media.send_media_marker(self, user_id, marker)
 
-    async def _download_incoming_file(self, file: dict[str, str]) -> str:
-        return await media.download_incoming_file(self, file)
+    async def _download_incoming_file(
+        self, file: dict[str, str], group_id: str = ""
+    ) -> str:
+        return await media.download_incoming_file(self, file, group_id)
 
     # ---- 主动调度（委托 proactive.py） ----
 
@@ -632,39 +781,69 @@ class Bridge:
         finally:
             await queue.put(None)
 
-    async def _send_private(self, user_id: str, text: str) -> None:
+    def _group_rate_ok(self, key: str) -> bool:
+        """群聊限流：每分钟最多回复 group_rate_limit_per_min 条；0 = 不限。"""
+        limit = int(self.cfg.get("group_rate_limit_per_min", 0) or 0)
+        if limit <= 0:
+            return True
+        now = time.monotonic()
+        recent = self.group_reply_times.setdefault(key, deque())
+        while recent and now - recent[0] > 60:
+            recent.popleft()
+        if len(recent) >= limit:
+            return False
+        recent.append(now)
+        return True
+
+    async def _send_private(self, target: str, text: str) -> None:
+        """发送文本。名字沿用 _send_private，但 target 是会话键：
+
+        私聊为裸 QQ 号，群聊为 `g:<群号>`（见 targets.py）。约 40 处调用点
+        因此无需改动即可同时支持两种场景。
+        """
         if not text.strip():
             return
-        if user_id in self.web_replies:
-            await self.web_replies[user_id].put(text)
+        if target in self.web_replies:
+            await self.web_replies[target].put(text)
             return
         if self.ws is None:
             logging.warning("WS 未连接，无法发送：%s", text[:80])
             return
-        try:
-            user_id_num = int(user_id)
-        except ValueError:
-            user_id_num = user_id
-        payload = {
-            "action": "send_private_msg",
-            "params": {"user_id": user_id_num, "message": text},
-        }
+        scene, raw_id = parse_key(target)
+        if scene == "group":
+            payload = {
+                "action": "send_group_msg",
+                "params": {"group_id": to_id(raw_id), "message": text},
+            }
+        else:
+            payload = {
+                "action": "send_private_msg",
+                "params": {"user_id": to_id(raw_id), "message": text},
+            }
         await self.ws.send(json.dumps(payload, ensure_ascii=False))
-        logging.info("已发送给 %s：%s", user_id, text[:80])
-        self.store.mark_activity(user_id)
+        logging.info("已发送到 %s（%s）：%s", target, scene, text[:80])
+        self.store.mark_activity(target)
 
 
 async def main() -> None:
     cfg = load_config()
     log_file = Path(cfg["log_file"])
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    # 按大小轮转，避免长跑之后 bridge.log 无限增长；log_max_bytes<=0 视为关闭轮转。
+    max_bytes = int(cfg.get("log_max_bytes") or 0)
+    if max_bytes > 0:
+        file_handler: logging.Handler = RotatingFileHandler(
+            log_file,
+            maxBytes=max_bytes,
+            backupCount=int(cfg.get("log_backup_count") or 0),
+            encoding="utf-8",
+        )
+    else:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
     logging.basicConfig(
         level=getattr(logging, str(cfg.get("log_level", "INFO")).upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, encoding="utf-8"),
-            logging.StreamHandler(),
-        ],
+        handlers=[file_handler, logging.StreamHandler()],
     )
     logging.info("配置：%s", cfg.get("_config_path") or "（内置默认值）")
     legacy_keys = cfg.get("_legacy_keys") or []

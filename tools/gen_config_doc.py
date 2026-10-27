@@ -24,13 +24,23 @@ GROUPS: list[tuple[str, str, list[str]]] = [
     (
         "连接",
         "怎么连上 QQ。",
-        ["onebot_ws_url", "full_access_qq"],
+        ["onebot_ws_url", "full_access_qq", "self_id"],
+    ),
+    (
+        "群聊",
+        "让助手在 QQ 群里也能说话。默认关闭；开启后私聊行为不受影响。",
+        [
+            "group_enabled", "group_whitelist", "group_full_access_qq",
+            "group_memory_enabled", "group_reply_at", "group_rate_limit_per_min",
+            "group_forward_enabled", "group_command_hint",
+        ],
     ),
     (
         "目录与状态文件",
         "日志、数据库、会话、记忆放哪。相对路径相对 `data_dir` 解析。",
         [
-            "data_dir", "workdir", "log_file", "log_level", "state_db_file",
+            "data_dir", "workdir", "log_file", "log_level", "log_max_bytes",
+            "log_backup_count", "state_db_file",
             "sessions_file", "memory_db", "persona_memory_file", "timetable_file",
             "proactive_notes_file", "voice_cache_dir",
         ],
@@ -106,7 +116,8 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         "人格设定",
         "留空为通用助手；填写后按设定的人设回应。",
         [
-            "persona_enabled", "persona_name", "persona_prompt", "persona_skill",
+            "persona_enabled", "persona_name", "persona_prompt", "persona_prompt_file",
+            "persona_skill",
             "persona_skill_home", "persona_ack_lines", "persona_chat_max_chars",
             "persona_chat_max_segments", "persona_chat_delay_sec",
             "persona_session_prefix", "persona_reset_turns", "persona_reset_hours",
@@ -117,7 +128,8 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         "内置提示词不满意就直接覆盖掉。",
         [
             "chat_style_guide", "media_frequency_guide", "media_marker_guide",
-            "proactive_topic_guide", "emoticon_examples", "extra_skill_triggers",
+            "proactive_topic_guide", "emoticon_examples", "strip_emoticons",
+            "extra_skill_triggers",
         ],
     ),
     (
@@ -158,7 +170,7 @@ GROUPS: list[tuple[str, str, list[str]]] = [
     (
         "Web 工作台",
         "浏览器里聊天、看提醒/待办/任务、查日志（默认关闭）。",
-        ["web_enabled", "web_host", "web_port", "web_token"],
+        ["web_enabled", "web_host", "web_port", "web_token", "web_local_no_token"],
     ),
     (
         "文件通道",
@@ -196,11 +208,23 @@ DESCRIPTIONS: dict[str, str] = {
     # 连接
     "onebot_ws_url": "NapCat 的 OneBot WebSocket 地址，默认本机 3001 端口",
     "full_access_qq": "**必填**。允许使用机器人的 QQ 号列表；不在列表里的私聊会被忽略",
+    "self_id": "机器人自己的 QQ 号。用于识别群里的 `@机器人`；事件自带 self_id 时以事件为准",
+    # 群聊
+    "group_enabled": "群聊总开关。关闭时所有群消息完全不处理（默认关闭）",
+    "group_whitelist": "生效的群号列表；留空 = 不限制。建议只填自己可控的群",
+    "group_full_access_qq": "群里允许使用命令执行与文件读写的成员；留空 = 沿用 `full_access_qq`",
+    "group_memory_enabled": "群聊是否读写长期记忆。默认关闭，避免群内容污染主人的记忆库",
+    "group_reply_at": "群回复时是否先 @ 提问者（会多一条 @ 消息）",
+    "group_rate_limit_per_min": "每群每分钟最多回复多少条；0 = 不限。群人多时建议设 3–5",
+    "group_forward_enabled": "群里是否允许把长回复合并转发（NapCat 拒绝时自动回退为分条发送）",
+    "group_command_hint": "群里被 @ 且发命令时的提示语；留空 = 静默忽略。群聊暂不支持命令",
     # 目录与状态文件
     "data_dir": "日志 / 数据库 / 会话 / 记忆的存放目录，默认项目下的 `data/`",
     "workdir": "助手的文件读写与命令执行范围；留空 = 项目目录。建议使用专用的空目录",
     "log_file": "日志文件名（相对 `data_dir`）",
     "log_level": "日志级别：DEBUG / INFO / WARNING / ERROR",
+    "log_max_bytes": "单个日志文件多大后轮转（字节）；`0` = 不轮转",
+    "log_backup_count": "轮转后保留的历史日志份数（`bridge.log.1`、`.2` …）；`0` = 不保留",
     "state_db_file": "提醒 / 待办 / 任务 / 知识库索引的 SQLite 文件",
     "sessions_file": "QQ 会话 ID 与轮次的 JSON 文件",
     "memory_db": "助手的会话历史与长期记忆 SQLite 文件",
@@ -297,6 +321,7 @@ DESCRIPTIONS: dict[str, str] = {
     "persona_enabled": "是否启用「人格模式」（助手按人设说话）",
     "persona_name": "助手自称，例如「小助手」；留空 = 普通助手",
     "persona_prompt": "人设描述，例如「说话简短、先给结论，不确定就直说不知道」",
+    "persona_prompt_file": "长人设写在文件里，启动时读入 `persona_prompt`；`persona_prompt` 非空时以它为准",
     "persona_skill": "技能名：填了会提示模型先读 `<persona_skill_home>/<技能>/SKILL.md`",
     "persona_skill_home": "技能目录根，默认 `~/.agents/skills`",
     "persona_ack_lines": "人格模式下收到任务的短回应",
@@ -311,7 +336,8 @@ DESCRIPTIONS: dict[str, str] = {
     "media_frequency_guide": "覆盖内置的「表情/语音使用频率」提示词",
     "media_marker_guide": "覆盖内置的「媒体标记」说明（高级用法）",
     "proactive_topic_guide": "覆盖内置的「主动话题规则」提示词",
-    "emoticon_examples": "颜文字示例，会写进提示词",
+    "emoticon_examples": "颜文字示例，会写进提示词；设为 `[]` 表示不提供示例",
+    "strip_emoticons": "发送前删除颜文字、emoji 与 QQ 表情标记（提示词约束失效时的兜底）",
     "extra_skill_triggers": "自定义技能触发：命中关键词时提示模型先读某个技能，例如 `[{\「keywords\」: [\「报销\」], \「skill\」: \「my-finance\」}]`",
     # 主动消息
     "proactive_enabled": "主动消息总开关（默认关闭）",
@@ -364,6 +390,7 @@ DESCRIPTIONS: dict[str, str] = {
     "web_host": "监听地址，建议保持 `127.0.0.1`",
     "web_port": "监听端口",
     "web_token": "访问口令；`web_enabled=true` 时必须设置一个非默认值",
+    "web_local_no_token": "本机回环访问免填口令（远程访问仍需 token）。单用户桌面可打开，共享机器请保持关闭",
     # 文件通道
     "messages_dir": "文件通道根目录",
     "to_qq_dir": "投递目录：往这里写 JSON 信封就会发到 QQ",

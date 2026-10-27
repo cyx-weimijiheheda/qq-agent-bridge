@@ -17,6 +17,7 @@
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [配置](#配置)
+- [群聊](#群聊)
 - [使用](#使用)
 - [自定义人格](#自定义人格)
 - [可选能力](#可选能力)
@@ -34,6 +35,7 @@
 | 能力 | 说明 |
 | --- | --- |
 | 文字对话 | 多轮上下文；长期记忆持久化到本地 SQLite，可关闭 |
+| 群聊 | 默认关闭；被 @ 时才回复，整群共用一个会话，敏感能力仅限白名单成员 |
 | 图片理解 | 图片直接交给多模态模型；描述中出现不确定项时自动联网补查 |
 | 视频分析 | 下载后抽帧逐帧描述，结合字幕与语音转写，输出结构化总结 |
 | 文件收发 | 读取 QQ 发来的文档（PDF 支持 OCR 兜底）；模型产出的文件以 `[FILE:]` 标记发回 |
@@ -43,7 +45,7 @@
 | 主动消息 | 定时、空闲或日程前主动发起对话；默认关闭，可配置时段、频率与冷却 |
 | 人格设定 | 默认通用中文助手；可通过配置项或技能目录定义人设、语气与媒体使用频率 |
 | 外部程序互通 | 基于文件的双向通道，其他程序可借该 QQ 号发送消息，QQ 消息也可转交处理 |
-| Web 工作台 | 浏览器内聊天、查看提醒/待办/任务/日志（可选） |
+| Web 工作台 | 浏览器内聊天、跟随日志、管理提醒/待办/任务（可选） |
 | 第三方插件 | 兼容 AstrBot 生态中仅依赖 `astrbot.api` 的简单插件（可选） |
 
 模型的文件与命令工具均被限制在配置项 `workdir` 指定的目录内。
@@ -162,6 +164,40 @@ start.bat           # Windows
 | 开启主动消息 | `proactive_enabled` 及同组配置 |
 | 自定义人格 | `persona_name`、`persona_prompt` |
 | 开启 Web 工作台 | `web_enabled`、`web_token` |
+| 让助手在群里说话 | `group_enabled`、`group_whitelist`、`self_id` |
+
+## 群聊
+
+**默认关闭。** 开启后助手会响应群里的 `@`，私聊行为完全不变。
+
+```json
+{
+  "self_id": "机器人自己的QQ号",
+  "group_enabled": true,
+  "group_whitelist": ["要启用的群号"],
+  "group_full_access_qq": ["可信成员的QQ号"]
+}
+```
+
+| 配置项 | 说明 |
+| --- | --- |
+| `group_enabled` | 总开关。关闭时群消息完全不处理 |
+| `group_whitelist` | 生效的群号；留空 = 不限制。建议只填自己可控的群 |
+| `group_full_access_qq` | 群里可用命令执行与文件读写的成员；留空 = 沿用 `full_access_qq` |
+| `group_memory_enabled` | 群聊是否读写长期记忆，默认 **关闭** |
+| `group_reply_at` | 回复时是否先 @ 提问者，默认关闭 |
+| `group_rate_limit_per_min` | 每群每分钟回复上限，`0` = 不限 |
+| `group_command_hint` | 群里发命令时的提示语，留空 = 静默忽略 |
+
+行为要点：
+
+- **只在被 @ 时调用模型并回复**。普通群消息不触发模型，但会保存到本地 SQLite 的群上下文；`@全体成员` 不算提及。
+- **一个群共用一个模型会话和群消息上下文**。被 @ 时会把近期未 @ 群聊作为背景，并明确提示模型优先回答本轮 @ 的成员；每条消息标注发言人。
+- Web 工作台的「上下文」页可查看群级记录，并永久删除群级消息记录和模型会话历史；长期记忆文件不受影响。
+- **权限分档**：群里任何人都能聊天，但不在 `group_full_access_qq` 里的成员，其请求会用「不含 shell 与文件读写工具」的模型实例处理 —— 工具根本没装配，而不是靠提示词劝阻。
+- **群聊默认不读写长期记忆**：否则群成员的对话会写进主人的记忆库，主人的记忆也会被注入到群里。需要时可开 `group_memory_enabled`。
+- **命令在群里不执行**：`/提醒`、`/待办`、`/任务`、`/知识库`、`/课表` 等会被拦下并回一句提示（可用 `group_command_hint` 自定义或置空静默）。这些子系统仍是「单个主人」作用域的，留待后续版本。
+- 支持文字对话、图片理解以及文件收发（群文件走 `get_group_file_url` / `upload_group_file`）。
 
 ## 使用
 
@@ -251,6 +287,17 @@ start.bat           # Windows
 }
 ```
 
+仓库附带一份可直接启用的奶蛙/“奶娃”群聊迷因运行卡：[prompts/naiwa-chat.md](prompts/naiwa-chat.md)。它补充了经典梗和贴吧用语，并按熟悉程度控制互怼火力；贴吧词例参考[百度贴吧的“典中典”话题](https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=5018099)和[贴吧用语整理](https://chouxiangbaike.com/platform/tieba)。
+
+```json
+{
+  "persona_name": "奶蛙",
+  "persona_prompt_file": "prompts/naiwa-chat.md"
+}
+```
+
+“奶娃”在网络语境里常被当作“奶蛙/奶龙”二创的谐称；这张卡按抽象、反差、被嫌弃式小剧场和群体接梗来处理，不会强行对每条消息刷笑声。
+
 <details>
 <summary>技能目录（适合长设定与附带资源）</summary>
 
@@ -332,6 +379,25 @@ pip install -r requirements-web.txt
 ```
 
 访问 `http://127.0.0.1:8080`，填入 `web_token` 即可。
+
+工作台分五个标签页：
+
+| 标签页 | 用途 |
+| --- | --- |
+| 日志 | 跟随尾部自动刷新；可按级别（INFO / WARNING / ERROR …）与关键字过滤；向上翻阅时不会被自动滚屏打断 |
+| 提醒 / 待办 / 任务 | 列表与增删改。待办可完成与删除，提醒可标记完成或取消，任务可取消 |
+| 聊天 | 与 QQ 共用同一套命令与处理管线 |
+
+顶部**作用域切换器**决定你在管理谁的数据：
+
+- 选 `QQ <号码>` —— 与 QQ 私聊共用同一份提醒 / 待办 / 任务。在这里加的待办，QQ 发 `/待办` 也能看到
+- 选 `Web · <会话>` —— Web 聊天里用 `/提醒` 等命令创建的数据落在 Web 侧，与 QQ 相互独立
+
+请求里的作用域必须命中服务端认可的取值，否则返回 403；变更接口把归属条件下推到 SQL，
+无法凭一个整数 id 改到其他作用域的数据。
+
+> 任务取消的边界：正在执行的任务**取消不了** —— 后台 worker 结束时会把状态覆盖回去。
+> 界面会如实提示"正在执行，无法取消"，不会假装成功。
 
 </details>
 
@@ -441,8 +507,8 @@ sudo systemctl enable --now qq-agent-bridge
 
 ### 发送消息无响应
 
-依次检查：NapCat 是否运行且已用小号登录；发送方 QQ 号是否在 `full_access_qq` 中；是否为私聊消息。
-仍无响应时查看 `data/bridge.log`。
+私聊依次检查：NapCat 是否运行且已用小号登录；发送方 QQ 号是否在 `full_access_qq` 中。
+群聊见下方「群里 @ 了机器人却没反应」。仍无响应时查看 `data/bridge.log`。
 
 ### 启动报「未配置模型 API key」
 
@@ -464,14 +530,20 @@ sudo systemctl enable --now qq-agent-bridge
 
 `[FILE:]` 中的路径必须是运行程序所在机器上的绝对路径，且文件真实存在。
 
-### 是否支持群聊
+### 群里 @ 了机器人却没反应
 
-当前仅支持私聊。
+依次检查：`group_enabled` 是否为 `true`；群号是否在 `group_whitelist` 里；`self_id` 是否填了机器人自己的 QQ 号（@ 检测要用它）；是否真的 @ 了机器人（`@全体成员` 不算）。
+
+### 群里发命令没反应
+
+群聊暂不支持命令，这是有意为之 —— 提醒、待办、任务等子系统目前仍是「单个主人」作用域的，群里多人共用会互相污染。被 @ 且发命令时会回一句 `group_command_hint`（默认「群里暂不支持命令，可以私聊我」）。
 
 ## 安全建议
 
 - **密钥不要入库**：`config.json` 已在 `.gitignore` 中；更推荐通过 `QQBOT_API_KEY` 环境变量注入。
 - **`full_access_qq` 仅填写可信账号**：列表内的账号可以使用命令执行与文件读写能力。
+- **群聊白名单收紧**：`group_whitelist` 只填自己可控的群；`group_full_access_qq` 只填可信成员。
+  不在该列表里的群成员仍可聊天，但拿不到 shell 与文件工具。
 - **`workdir` 使用专用目录**：避免指向家目录、桌面或代码仓库。
 - **Web 工作台仅监听本机**：保持 `web_host` 为 `127.0.0.1`；需要远程访问时使用 SSH 隧道或反向代理 + HTTPS。
 - **`web_token` 使用随机长字符串**。
@@ -480,7 +552,8 @@ sudo systemctl enable --now qq-agent-bridge
 ## 开发
 
 - Python 3.10+，全异步实现。核心模块：`bridge.py`（编排）、`handlers.py`（消息处理管线）、
-  `agent_client.py`（模型 / 工具 / 记忆）、`media.py`（媒体收发）、`message_utils.py`（提示词与消息分类）。
+  `agent_client.py`（模型 / 工具 / 记忆）、`media.py`（媒体收发）、`message_utils.py`（提示词与消息分类）、
+  `targets.py`（会话寻址：私聊键为裸 QQ 号，群聊键为 `g:<群号>`，发送层据此自动选择接口）。
 - 新增配置项：在 `config.py` 的 `DEFAULTS` 中添加键 → 运行 `python tools/gen_config_doc.py`
   重新生成 [CONFIG.md](CONFIG.md)（未补说明时脚本会拒绝生成，测试同样会拦截）。
 - 新增技能：在 `skills/` 下实现纯函数 → 在 `skills_registry.py` 中注册 → 加入 `skills_enabled`。
@@ -501,6 +574,8 @@ and any OpenAI-compatible model endpoint.
 
 - Understands text, images, videos and documents; can run tasks inside a sandboxed working directory
   and send generated files back to the chat.
+- Optional group support (off by default): replies only when @-mentioned, one shared session per group,
+  and shell/file tools stay restricted to whitelisted members.
 - Includes reminders, todos, a task queue, a local knowledge base and optional proactive messages.
 - Runs on Windows / macOS / Linux (`start.bat` / `start.sh`).
 - Configure via `config.json` or `QQBOT_<KEY>` environment variables; all ~180 options are documented
