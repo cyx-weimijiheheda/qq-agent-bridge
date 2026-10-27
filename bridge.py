@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import os
+import random
 import shlex
 import sys
 import time
@@ -51,6 +52,7 @@ class MessageBuffer:
         self.user_id = user_id
         self.cfg = cfg
         self.scene = scene
+        self.triggered_by_mention = False
         self.group_id = group_id
         self.sender_id = sender_id
         self.sender_name = sender_name
@@ -265,7 +267,7 @@ class Bridge:
         """群聊事件的准入判断；不满足条件的直接返回 None（完全不进 buffer）。
 
         - 总开关关闭时一律忽略
-        - 所有群消息都允许进入群上下文存储；只有 @ 到机器人时才触发模型回复
+        - 所有群消息进入群上下文；默认仅 @ 触发，亦可配置非 @ 随机触发
         - @全体成员不算机器人提及
         - 配了群白名单时只处理白名单内的群
         """
@@ -319,8 +321,16 @@ class Bridge:
                     message_id,
                     exc_info=True,
                 )
-        if not info.get("mentioned_bot"):
-            return
+        mentioned = bool(info.get("mentioned_bot"))
+        if not mentioned:
+            if not self.cfg.get("group_reply_without_at", False):
+                return
+            try:
+                trigger_level = max(0, min(100, int(self.cfg.get("group_reply_trigger_level", 20))))
+            except (TypeError, ValueError):
+                trigger_level = 20
+            if trigger_level <= 0 or random.randrange(100) >= trigger_level:
+                return
         allowed = set(self.cfg.get("group_full_access_qq") or self.cfg["full_access_qq"])
         buf = self.buffers.get(key)
         if buf is None:
@@ -335,6 +345,7 @@ class Bridge:
             self.buffers[key] = buf
         buf.sender_id = info["user_id"]
         buf.sender_name = info["nickname"]
+        buf.triggered_by_mention = bool(getattr(buf, "triggered_by_mention", False) or mentioned)
         buf.message_ids.append(message_id)
         # 攒进一条非白名单成员的消息，整批就降为受限工具档
         buf.full_access = buf.full_access and info["user_id"] in allowed

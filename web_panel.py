@@ -246,9 +246,11 @@ class WebPanel:
         thread = ""
         turns = 0
         started = None
+        archived: list[str] = []
         if store is not None:
             try:
                 thread = str(store.get_persona_thread(key) or "")
+                archived = list(store.get_archived_persona_threads(key))
                 if thread:
                     turns = int(store.get_persona_turns(key) or 0)
                     started = store.get_persona_started_ts(key)
@@ -257,7 +259,8 @@ class WebPanel:
         return {
             "key": key,
             "thread_id": thread,
-            "has_context": bool(thread),
+            "has_context": bool(thread or archived),
+            "archived_count": len(archived),
             "turns": turns,
             "started_ts": started,
         }
@@ -708,7 +711,15 @@ class WebPanel:
             if entry is None:
                 raise HTTPException(status_code=403, detail="未知上下文")
             thread_id = str(entry.get("thread_id") or "")
-            messages = self._read_context_messages(thread_id, limit)
+            store = self._session_store()
+            thread_ids = ([thread_id] if thread_id else [])
+            if store is not None:
+                thread_ids.extend(store.get_archived_persona_threads(str(key)))
+            messages = []
+            for saved_thread in dict.fromkeys(thread_ids):
+                messages.extend(self._read_context_messages(saved_thread, 200))
+            messages.sort(key=lambda item: str(item.get("ts") or ""))
+            messages = messages[-min(max(int(limit), 1), 200):]
             if str(key).startswith("g:") and parse_group_member_key(key) is None:
                 # 群原始消息来自 group_context；模型线程只取助手回复，避免重复列出 @ 消息。
                 messages = [item for item in messages if item.get("role") == "assistant"]
@@ -731,7 +742,7 @@ class WebPanel:
                             for row in group_messages
                             if str(row.get("text") or "").strip()
                         )
-                        messages.sort(key=lambda item: float(item.get("ts") or 0))
+                        messages.sort(key=lambda item: str(item.get("ts") or ""))
                         messages = messages[-min(max(int(limit), 1), 200) :]
                     except Exception:
                         logging.warning("读取群消息上下文失败：%s", group_id, exc_info=True)
@@ -757,34 +768,100 @@ class WebPanel:
                     "message": "当前没有会话存储，无法清除",
                 }
             try:
-                thread_id = str(store.get_persona_thread(key) or "")
-                deleted_runs = await asyncio.to_thread(
-                    self._delete_context_history, thread_id
-                )
-                deleted_group_messages = 0
-                if key.startswith("g:") and parse_group_member_key(key) is None:
-                    state_db = getattr(self.bridge, "state_db", None)
-                    if state_db is not None:
-                        deleted_group_messages = await asyncio.to_thread(
-                            state_db.delete_group_context, key[2:]
-                        )
-                cleared = bool(store.reset_persona(key))
+                thread_id = store.archive_persona_thread(key)
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"清除失败：{exc}") from exc
             self._invalidate_scopes()
             return {
                 "ok": True,
                 "key": key,
-                "cleared": cleared,
-                "deleted_runs": deleted_runs,
-                "deleted_group_messages": deleted_group_messages,
-                "message": (
-                    f"已永久删除该上下文（模型历史 {deleted_runs} 条，"
-                    f"群消息 {deleted_group_messages} 条）"
-                    if cleared or deleted_runs or deleted_group_messages
-                    else "该上下文没有可清除的历史"
-                ),
+                "cleared": bool(thread_id),
+                "message": "已清除当前会话；历史已保留，可用“删除”永久删除。" if thread_id else "当前没有活动会话。",
             }
+
+        @app.post("/api/contexts/delete", dependencies=[Depends(self._require_auth)])
+        async def api_context_delete(body: ContextClearIn) -> dict[str, Any]:
+            key = str(body.key or "").strip()
+            if key not in self._context_map():
+                raise HTTPException(status_code=403, detail="未知上下文")
+            store = self._session_store()
+            if store is None:
+                raise HTTPException(status_code=503, detail="当前没有会话存储")
+            try:
+                thread_ids = await asyncio.to_thread(store.delete_persona_context, key)
+                deleted_runs = 0
+                for thread_id in thread_ids:
+                    deleted_runs += await asyncio.to_thread(self._delete_context_history, thread_id)
+                deleted_group_messages = 0
+                if key.startswith("g:") and parse_group_member_key(key) is None:
+                    state_db = getattr(self.bridge, "state_db", None)
+                    if state_db is not None:
+                        deleted_group_messages = await asyncio.to_thread(state_db.delete_group_context, key[2:])
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"删除失败：{exc}") from exc
+            self._invalidate_scopes()
+            return {"ok": True, "message": f"已永久删除 {len(thread_ids)} 个线程的模型历史（{deleted_runs} 条）及 {deleted_group_messages} 条群消息。"}
+
+        @app.post("/api/contexts/compress", dependencies=[Depends(self._require_auth)])
+        async def api_context_compress(body: ContextClearIn) -> dict[str, Any]:
+            key = str(body.key or "").strip()
+            entry = self._context_map().get(key)
+            if entry is None:
+                raise HTTPException(status_code=403, detail="未知上下文")
+            store = self._session_store()
+            if store is None:
+                raise HTTPException(status_code=503, detail="当前没有会话存储")
+            thread_ids = ([str(store.get_persona_thread(key) or "")] if store.get_persona_thread(key) else [])
+            thread_ids.extend(store.get_archived_persona_threads(key))
+            old_messages = []
+            for thread_id in dict.fromkeys(thread_ids):
+                old_messages.extend(self._read_context_messages(thread_id, 200))
+            if key.startswith("g:") and parse_group_member_key(key) is None:
+                state_db = getattr(self.bridge, "state_db", None)
+                if state_db is not None:
+                    group_rows = state_db.list_group_context_messages(key[2:], limit=200)
+                    old_messages.extend({"role": "user", "content": f"{r.get('nickname') or r.get('user_id')}：{r.get('text')}", "ts": r.get("created_at")} for r in group_rows if str(r.get("text") or "").strip())
+            old_messages.sort(key=lambda item: str(item.get("ts") or ""))
+            transcript = "\n".join(f"{m['role']}: {m['content']}" for m in old_messages)[-30000:]
+            if not transcript:
+                raise HTTPException(status_code=400, detail="没有可压缩的历史内容")
+            from call_policy import resolve_policy, run_with_policy
+
+            bridge = self.bridge
+            summary_thread = None
+            seed_thread = None
+            try:
+                summary, summary_thread = await run_with_policy(
+                    bridge,
+                    "请把以下聊天上下文压缩成供后续对话使用的摘要。保留人物关系、偏好、约定、进行中的事项和必要事实；过滤寒暄与重复。只输出摘要。\n\n" + transcript,
+                    None, resolve_policy(bridge.cfg, "summary"), full_access=False,
+                    group=key.startswith("g:"), persona=True,
+                )
+                if not summary.strip():
+                    raise RuntimeError("模型没有生成摘要")
+                _, seed_thread = await run_with_policy(
+                    bridge,
+                    "以下是此前对话的压缩摘要。请将其作为本会话已有上下文，后续自然接续，不要复述摘要：\n\n" + summary.strip(),
+                    None, resolve_policy(bridge.cfg, "summary"), full_access=False,
+                    group=key.startswith("g:"), persona=True,
+                )
+                if not seed_thread:
+                    raise RuntimeError("无法建立摘要会话")
+                store.set_persona_thread(key, seed_thread)
+                failures = []
+                for old_id in dict.fromkeys(thread_ids):
+                    try:
+                        await asyncio.to_thread(self._delete_context_history, old_id)
+                    except Exception:
+                        failures.append(old_id)
+                store.set_archived_persona_threads(key, failures)
+            except Exception as exc:
+                if summary_thread:
+                    await asyncio.to_thread(self._delete_context_history, summary_thread)
+                if seed_thread:
+                    await asyncio.to_thread(self._delete_context_history, seed_thread)
+                raise HTTPException(status_code=500, detail=f"压缩失败：{exc}") from exc
+            return {"ok": True, "message": "上下文已压缩为摘要，新会话已建立。" + (f"有 {len(failures)} 个旧线程未能清理。" if failures else "")}
 
         @app.post("/api/contexts/clear_group", dependencies=[Depends(self._require_auth)])
         async def api_context_clear_group(body: ContextGroupClearIn) -> dict[str, Any]:
@@ -809,11 +886,10 @@ class WebPanel:
             deleted_group_messages = 0
             for key in keys:
                 try:
-                    thread_id = str(store.get_persona_thread(key) or "")
-                    deleted_runs += await asyncio.to_thread(
-                        self._delete_context_history, thread_id
-                    )
-                    if store.reset_persona(key):
+                    thread_ids = await asyncio.to_thread(store.delete_persona_context, key)
+                    for thread_id in thread_ids:
+                        deleted_runs += await asyncio.to_thread(self._delete_context_history, thread_id)
+                    if thread_ids:
                         cleared += 1
                 except Exception:
                     logging.warning("清除上下文失败：%s", key, exc_info=True)

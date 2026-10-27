@@ -449,15 +449,27 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         cfg=bridge.cfg,
         include_intro=False,  # 人设走 system instructions，避免写进群会话历史
     )
+    trigger_context = (
+        f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）@ 你触发。"
+        if getattr(buf, "triggered_by_mention", True)
+        else f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）的普通发言触发；你是看到话题后随机决定插话的。"
+    )
     prompt += (
         "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
         f"当前群号 {buf.group_id}，上面每条消息前都标了发言人。"
-        f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）@ 你触发。"
-        "请把群里已有上下文当作共同背景，需要时再引用；本轮先针对这位提问者的具体问题或请求回答，"
-        "可自然称呼对方或引用其发言，同时让回复在群里公开可读。"
-        "如果缓冲中有多位成员发言，以最后一位 @ 你的人为当前主要回应对象，其他发言只作背景。"
-        "不要把回复泛化成面向所有人的公告，也不要忽略提问者只做群聊气氛总结。\n"
+        + trigger_context
+        + (
+            "请把群里已有上下文当作共同背景，需要时再引用；本轮先针对这位提问者的具体问题或请求回答，"
+            "可自然称呼对方或引用其发言，同时让回复在群里公开可读。"
+            "如果缓冲中有多位成员发言，以最后一位触发本轮的人为当前主要回应对象，其他发言只作背景。"
+            "不要把回复泛化成面向所有人的公告，也不要忽略提问者只做群聊气氛总结。\n"
+        )
     )
+    if not getattr(buf, "triggered_by_mention", True):
+        prompt += (
+            "这是一次随机抽中的非 @ 插话机会。先看当前话题是否适合奶蛙接梗、补充或轻松互动；"
+            "如果没有自然、有趣或有帮助的切入点，只输出 [不插话]，不要勉强回复。\n"
+        )
 
     # 未 @ 机器人的群聊不会触发模型，但仍保存在 StateDB；在被 @ 时提供近期群聊背景。
     # 被 @ 的历史轮次已经在共用的 Agent 线程中，避免再重复注入一遍。
@@ -518,6 +530,9 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
     if new_thread_id:
         bridge.store.set_persona_thread(context_key, new_thread_id)
     reply = sanitize_persona_reply(reply, bridge.cfg)
+    if not getattr(buf, "triggered_by_mention", True) and reply.strip() == "[不插话]":
+        logging.info("奶蛙判断当前群聊没有自然插话点：%s", session_key)
+        return
     if bridge.cfg.get("group_reply_at", False) and buf.sender_id:
         # @ 必须在文本之前单独发一段，文本里没法表达 at 段
         await bridge._send_private_segments(

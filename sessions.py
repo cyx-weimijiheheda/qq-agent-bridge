@@ -38,6 +38,12 @@ class SessionStore:
     def get_persona_thread(self, user_id: str) -> str | None:
         return self._data.get(str(user_id), {}).get("persona_thread_id")
 
+    def get_archived_persona_threads(self, user_id: str) -> list[str]:
+        raw = self._data.get(str(user_id), {}).get("archived_persona_thread_ids")
+        if not isinstance(raw, list):
+            return []
+        return list(dict.fromkeys(str(item) for item in raw if str(item).strip()))
+
     def set_persona_thread(self, user_id: str, thread_id: str) -> None:
         data = self._data.setdefault(str(user_id), {})
         old = data.get("persona_thread_id")
@@ -113,6 +119,54 @@ class SessionStore:
         data.pop("task_follow", None)
         self.save()
         return existed
+
+    def archive_persona_thread(self, user_id: str) -> str | None:
+        """清除当前会话指针，但保留线程 ID 供工作台查看或永久删除。"""
+        key = str(user_id)
+        data = self._data.get(key)
+        if not data:
+            return None
+        thread_id = str(data.pop("persona_thread_id", "") or "").strip()
+        if thread_id:
+            archived = self.get_archived_persona_threads(key)
+            if thread_id not in archived:
+                archived.append(thread_id)
+            data["archived_persona_thread_ids"] = archived
+        data.pop("persona_turns", None)
+        data.pop("persona_started_ts", None)
+        data.pop("task_follow", None)
+        self.save()
+        return thread_id or None
+
+    def set_archived_persona_threads(self, user_id: str, thread_ids: list[str]) -> None:
+        data = self._data.setdefault(str(user_id), {})
+        unique = list(dict.fromkeys(str(item).strip() for item in thread_ids if str(item).strip()))
+        if unique:
+            data["archived_persona_thread_ids"] = unique
+        else:
+            data.pop("archived_persona_thread_ids", None)
+        self.save()
+
+    def delete_persona_context(self, user_id: str) -> list[str]:
+        """移除当前与归档线程指针，并返回其 session IDs 供数据库清理。"""
+        key = str(user_id)
+        data = self._data.get(key)
+        if not data:
+            return []
+        thread_ids = self.get_archived_persona_threads(key)
+        current = str(data.get("persona_thread_id") or "").strip()
+        if current:
+            thread_ids.append(current)
+        for field in (
+            "persona_thread_id",
+            "archived_persona_thread_ids",
+            "persona_turns",
+            "persona_started_ts",
+            "task_follow",
+        ):
+            data.pop(field, None)
+        self.save()
+        return list(dict.fromkeys(thread_ids))
 
     def get_proactive_state(self, user_id: str) -> dict[str, Any]:
         return dict(self._data.setdefault(str(user_id), {}).setdefault("proactive", {}))

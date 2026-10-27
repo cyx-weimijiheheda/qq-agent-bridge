@@ -175,7 +175,9 @@ start.bat           # Windows
   "self_id": "机器人自己的QQ号",
   "group_enabled": true,
   "group_whitelist": ["要启用的群号"],
-  "group_full_access_qq": ["可信成员的QQ号"]
+  "group_full_access_qq": ["可信成员的QQ号"],
+  "group_reply_without_at": false,
+  "group_reply_trigger_level": 20
 }
 ```
 
@@ -186,12 +188,14 @@ start.bat           # Windows
 | `group_full_access_qq` | 群里可用命令执行与文件读写的成员；留空 = 沿用 `full_access_qq` |
 | `group_memory_enabled` | 群聊是否读写长期记忆，默认 **关闭** |
 | `group_reply_at` | 回复时是否先 @ 提问者，默认关闭 |
+| `group_reply_without_at` | 是否允许机器人不被 @ 时也随机接话，默认关闭 |
+| `group_reply_trigger_level` | 非 @ 消息触发回复概率，0–100；数值越高越容易插话，默认 20，仅 `group_reply_without_at` 开启时生效 |
 | `group_rate_limit_per_min` | 每群每分钟回复上限，`0` = 不限 |
 | `group_command_hint` | 群里发命令时的提示语，留空 = 静默忽略 |
 
 行为要点：
 
-- **只在被 @ 时调用模型并回复**。普通群消息不触发模型，但会保存到本地 SQLite 的群上下文；`@全体成员` 不算提及。
+- 默认只在被 @ 时调用模型并回复。可开启 `group_reply_without_at`，再用 `group_reply_trigger_level` 设置非 @ 消息的随机触发概率；被触发后由模型结合上下文选择自然接话。普通群消息始终保存到本地 SQLite 群上下文；`@全体成员` 不算提及。
 - **一个群共用一个模型会话和群消息上下文**。被 @ 时会把近期未 @ 群聊作为背景，并明确提示模型优先回答本轮 @ 的成员；每条消息标注发言人。
 - Web 工作台的「上下文」页可查看群级记录，并永久删除群级消息记录和模型会话历史；长期记忆文件不受影响。
 - **权限分档**：群里任何人都能聊天，但不在 `group_full_access_qq` 里的成员，其请求会用「不含 shell 与文件读写工具」的模型实例处理 —— 工具根本没装配，而不是靠提示词劝阻。

@@ -807,6 +807,7 @@ function ctxSub(item) {
   if (item.has_context) {
     if (item.thread_id) bits.push("线程 " + String(item.thread_id).slice(0, 12));
     else if (item.shared) bits.push("整群共享");
+    if (item.archived_count) bits.push(item.archived_count + " 个已清除历史线程");
     bits.push((item.turns || 0) + " 轮");
   } else {
     bits.push("无历史");
@@ -839,13 +840,27 @@ function ctxRow(item) {
   view.dataset.act = "ctx-view";
   view.dataset.key = item.key;
   const clear = document.createElement("button");
-  clear.className = "btn danger";
+  clear.className = "btn";
   clear.textContent = "清除";
   clear.dataset.act = "ctx-clear";
   clear.dataset.key = item.key;
   clear.dataset.label = item.label;
-  clear.disabled = !item.has_context;
-  acts.append(view, clear);
+  clear.disabled = !item.thread_id;
+  const remove = document.createElement("button");
+  remove.className = "btn danger";
+  remove.textContent = "删除";
+  remove.dataset.act = "ctx-delete";
+  remove.dataset.key = item.key;
+  remove.dataset.label = item.label;
+  remove.disabled = !item.has_context && !item.message_count;
+  const compress = document.createElement("button");
+  compress.className = "btn";
+  compress.textContent = "压缩";
+  compress.dataset.act = "ctx-compress";
+  compress.dataset.key = item.key;
+  compress.dataset.label = item.label;
+  compress.disabled = !item.has_context;
+  acts.append(view, clear, remove, compress);
 
   row.append(body, acts);
   return row;
@@ -932,11 +947,32 @@ async function viewContext(key) {
 }
 
 async function clearContext(key, label) {
-  if (!confirm("永久删除「" + label + "」的数据库对话上下文？\n此操作会删除该线程的模型历史；整群上下文还会删除该群保存的消息记录。长期记忆（memory.md）不会被删除。")) return;
+  if (!confirm("清除「" + label + "」的当前会话？\n历史会保留，可稍后用“删除”永久删除。")) return;
   try {
     const d = await api("/api/contexts/clear", { method: "POST", body: { key } });
     toast(d.message || "已清除", d.ok === false ? "bad" : "good");
     $("ctxView").hidden = true;
+    await loadContexts();
+    loadScopes();
+  } catch (err) { toast(err.message, "bad"); }
+}
+
+async function deleteContext(key, label) {
+  if (!confirm("永久删除「" + label + "」的所有模型会话历史" + (key.startsWith("g:") ? "和该群保存的消息" : "") + "？此操作不可恢复。")) return;
+  try {
+    const d = await api("/api/contexts/delete", { method: "POST", body: { key } });
+    toast(d.message || "已删除", d.ok === false ? "bad" : "good");
+    $("ctxView").hidden = true;
+    await loadContexts();
+    loadScopes();
+  } catch (err) { toast(err.message, "bad"); }
+}
+
+async function compressContext(key, label) {
+  if (!confirm("压缩「" + label + "」的聊天历史为摘要？摘要会进入新的会话，旧模型历史随后删除。")) return;
+  try {
+    const d = await api("/api/contexts/compress", { method: "POST", body: { key } });
+    toast(d.message || "已压缩", d.ok === false ? "bad" : "good");
     await loadContexts();
     loadScopes();
   } catch (err) { toast(err.message, "bad"); }
@@ -1035,6 +1071,8 @@ $("ctxRows").addEventListener("click", (e) => {
   const act = btn.dataset.act;
   if (act === "ctx-view") viewContext(btn.dataset.key);
   else if (act === "ctx-clear") clearContext(btn.dataset.key, btn.dataset.label);
+  else if (act === "ctx-delete") deleteContext(btn.dataset.key, btn.dataset.label);
+  else if (act === "ctx-compress") compressContext(btn.dataset.key, btn.dataset.label);
   else if (act === "ctx-clear-group") clearGroupContext(btn.dataset.group);
 });
 
