@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS group_members (
     message_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (group_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS group_context (
+    group_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    nickname TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    mentioned_bot INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (group_id, message_id)
+);
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
@@ -65,6 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id, done);
 CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs(enabled, next_run);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON tasks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id, last_seen_ts);
+CREATE INDEX IF NOT EXISTS idx_group_context_recent ON group_context(group_id, created_at);
 """
 
 _TASK_FIELDS = {
@@ -297,7 +308,7 @@ class StateDB:
         )
         return [str(row["user_id"]) for row in rows]
 
-    # ---- 群成员（每个成员对应一份独立上下文）----
+    # ---- 群成员目录与群级上下文 ----
 
     def touch_group_member(
         self,
@@ -337,6 +348,67 @@ class StateDB:
             (str(group_id), str(user_id)),
         )
         return rows[0] if rows else None
+
+    def add_group_context_message(
+        self,
+        group_id: str,
+        message_id: str,
+        user_id: str,
+        nickname: str,
+        text: str,
+        *,
+        mentioned_bot: bool = False,
+        created_at: float | None = None,
+    ) -> None:
+        """持久化群消息，供后续 @ 机器人时作为整群背景参考。"""
+        self._execute(
+            "INSERT OR IGNORE INTO group_context"
+            " (group_id, message_id, user_id, nickname, text, mentioned_bot, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(group_id),
+                str(message_id),
+                str(user_id),
+                str(nickname or ""),
+                str(text or ""),
+                int(bool(mentioned_bot)),
+                time.time() if created_at is None else float(created_at),
+            ),
+        )
+
+    def list_group_context_messages(
+        self,
+        group_id: str,
+        *,
+        limit: int = 80,
+        exclude_message_ids: set[str] | None = None,
+        unmentioned_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """返回最近群消息，按时间正序；当前缓冲中的消息可排除避免重复。"""
+        mentioned_filter = " AND mentioned_bot = 0" if unmentioned_only else ""
+        rows = self._query(
+            "SELECT group_id, message_id, user_id, nickname, text, mentioned_bot, created_at"
+            " FROM group_context WHERE group_id = ?"
+            + mentioned_filter
+            + " ORDER BY created_at DESC LIMIT ?",
+            (str(group_id), max(1, min(int(limit), 500))),
+        )
+        excluded = {str(item) for item in (exclude_message_ids or set())}
+        rows = [row for row in rows if str(row["message_id"]) not in excluded]
+        rows.reverse()
+        return rows
+
+    def list_group_context_groups(self) -> list[dict[str, Any]]:
+        return self._query(
+            "SELECT group_id, COUNT(*) AS message_count, MAX(created_at) AS last_seen_ts"
+            " FROM group_context GROUP BY group_id ORDER BY group_id"
+        )
+
+    def delete_group_context(self, group_id: str) -> int:
+        """永久删除指定群的原始消息上下文。"""
+        return self._changed(
+            "DELETE FROM group_context WHERE group_id = ?", (str(group_id),)
+        )
 
     # ---- knowledge base ----
 

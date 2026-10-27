@@ -29,7 +29,6 @@ from message_utils import (
 )
 from pdf_utils import extract_pdf_text
 from reply_sender import send_reply
-from targets import group_member_key
 from timetable import format_preview, load_timetable, parse_csv, parse_xlsx, save_timetable
 from video_utils import (
     build_videoshot_from_frames,
@@ -453,14 +452,45 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
     prompt += (
         "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
         f"当前群号 {buf.group_id}，上面每条消息前都标了发言人。"
-        "回复要简短、面向群里所有人，不要用私聊口吻点名某个人。\n"
+        f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）@ 你触发。"
+        "请把群里已有上下文当作共同背景，需要时再引用；本轮先针对这位提问者的具体问题或请求回答，"
+        "可自然称呼对方或引用其发言，同时让回复在群里公开可读。"
+        "如果缓冲中有多位成员发言，以最后一位 @ 你的人为当前主要回应对象，其他发言只作背景。"
+        "不要把回复泛化成面向所有人的公告，也不要忽略提问者只做群聊气氛总结。\n"
     )
 
-    # 群聊按成员隔离上下文：g:<群号>:<QQ号>。发送目标仍是整群（session_key），
-    # 只有线程查找/写入换成成员键。
+    # 未 @ 机器人的群聊不会触发模型，但仍保存在 StateDB；在被 @ 时提供近期群聊背景。
+    # 被 @ 的历史轮次已经在共用的 Agent 线程中，避免再重复注入一遍。
+    state_db = getattr(bridge, "state_db", None)
+    if state_db is not None:
+        try:
+            rows = state_db.list_group_context_messages(
+                buf.group_id,
+                limit=100,
+                exclude_message_ids=set(getattr(buf, "message_ids", [])),
+                unmentioned_only=True,
+            )
+            lines = [
+                f"{row['nickname'] or row['user_id']}（QQ {row['user_id']}）：{row['text']}"
+                for row in rows
+                if str(row.get("text") or "").strip()
+            ][-40:]
+            history = "\n".join(lines)
+            if len(history) > 5000:
+                history = history[-5000:]
+            if history:
+                prompt += (
+                    "\n【群聊近期背景，仅供需要时参考】\n"
+                    + history
+                    + "\n【背景结束】不要逐条复述背景；优先回答本轮 @ 你的提问。\n"
+                )
+        except Exception:
+            logging.warning("读取群聊背景失败：%s", buf.group_id, exc_info=True)
+
+    # 每个群共用一个长期线程，让不同成员通过 @ 触发的发言进入同一群上下文。
+    # 成员资料仍单独记录；本轮回复对象由 buf.sender_id / sender_name 明确告诉模型。
     context_key = session_key
     if buf.sender_id:
-        context_key = group_member_key(buf.group_id, buf.sender_id)
         state_db = getattr(bridge, "state_db", None)
         if state_db is not None:
             try:

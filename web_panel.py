@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from calendar_todos import normalize_todo_text
 from scheduler import add_reminder_from_text
-from targets import group_member_key, parse_group_member_key
+from targets import group_key, group_member_key, parse_group_member_key
 
 _BEARER = HTTPBearer(auto_error=False)
 
@@ -263,10 +263,10 @@ class WebPanel:
         }
 
     def _context_entries(self) -> dict[str, Any]:
-        """按私聊 / 群成员 / Web 分组列出所有上下文。
+        """按私聊 / 群共享与历史成员线程 / Web 分组列出所有上下文。
 
-        群成员来自 `state_db.group_members`（只有真正触发过回复的成员才有上下文），
-        另把旧版的整群共享键 `g:<群号>` 作为「旧会话」保留，便于清理。
+        群成员来自 `state_db.group_members`；群级线程使用 `g:<群号>`，旧版成员线程
+        `g:<群号>:<QQ号>` 仍列出，便于检查和永久清理迁移前的历史。
         """
         private: list[dict[str, Any]] = []
         web: list[dict[str, Any]] = []
@@ -284,6 +284,27 @@ class WebPanel:
         groups: dict[str, list[dict[str, Any]]] = {}
         state_db = getattr(self.bridge, "state_db", None)
         if state_db is not None:
+            try:
+                for row in state_db.list_group_context_groups():
+                    group_id = str(row.get("group_id") or "")
+                    if not group_id:
+                        continue
+                    entry = self._context_meta(group_key(group_id))
+                    entry.update(
+                        {
+                            "group_id": group_id,
+                            "user_id": "",
+                            "nickname": "",
+                            "label": "群共享上下文",
+                            "shared": True,
+                            "message_count": int(row.get("message_count") or 0),
+                            "last_seen_ts": float(row.get("last_seen_ts") or 0),
+                            "has_context": bool(entry["has_context"] or row.get("message_count")),
+                        }
+                    )
+                    groups.setdefault(group_id, []).append(entry)
+            except Exception:
+                logging.warning("读取群上下文目录失败", exc_info=True)
             try:
                 rows = state_db.list_group_members()
             except Exception:
@@ -335,16 +356,18 @@ class WebPanel:
                     groups.setdefault(group_id, []).append(entry)
                 elif str(key).startswith("g:"):
                     group_id = str(key)[2:]
+                    if any(item["key"] == key for item in groups.get(group_id, [])):
+                        continue
                     entry = self._context_meta(key)
                     entry.update(
                         {
                             "group_id": group_id,
                             "user_id": "",
                             "nickname": "",
-                            "label": "整群共享（旧会话）",
+                            "label": "群共享上下文",
                             "last_seen_ts": 0.0,
                             "message_count": 0,
-                            "legacy": True,
+                            "shared": True,
                         }
                     )
                     groups.setdefault(group_id, []).append(entry)
@@ -457,6 +480,52 @@ class WebPanel:
             deduped.append(msg)
         limit = max(1, min(int(limit), 200))
         return deduped[-limit:]
+
+    def _delete_context_history(self, thread_id: str) -> int:
+        """永久删除一个 Agno 会话的运行历史及会话行，返回删除的历史 run 数。"""
+        if not thread_id:
+            return 0
+        path = self._history_path()
+        if not path.exists():
+            return 0
+        conn = sqlite3.connect(str(path), timeout=10)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            targets = ["agno_runs"] if "agno_runs" in tables else []
+            targets.extend(
+                name
+                for name in tables
+                if name.startswith("agno_")
+                and "session" in name.lower()
+                and name not in targets
+            )
+            deleted_runs = 0
+            for table in targets:
+                quoted = '"' + table.replace('"', '""') + '"'
+                columns = {
+                    str(row[1])
+                    for row in conn.execute(f"PRAGMA table_info({quoted})").fetchall()
+                }
+                if "session_id" not in columns:
+                    continue
+                cursor = conn.execute(
+                    f"DELETE FROM {quoted} WHERE session_id = ?", (thread_id,)
+                )
+                if table == "agno_runs":
+                    deleted_runs = max(0, int(cursor.rowcount))
+            conn.commit()
+            return deleted_runs
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     # ---- 日志 ----
 
@@ -639,13 +708,40 @@ class WebPanel:
             if entry is None:
                 raise HTTPException(status_code=403, detail="未知上下文")
             thread_id = str(entry.get("thread_id") or "")
+            messages = self._read_context_messages(thread_id, limit)
+            if str(key).startswith("g:") and parse_group_member_key(key) is None:
+                # 群原始消息来自 group_context；模型线程只取助手回复，避免重复列出 @ 消息。
+                messages = [item for item in messages if item.get("role") == "assistant"]
+                group_id = str(key)[2:]
+                state_db = getattr(self.bridge, "state_db", None)
+                if state_db is not None:
+                    try:
+                        group_messages = state_db.list_group_context_messages(
+                            group_id, limit=min(max(int(limit), 1), 200)
+                        )
+                        messages.extend(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"{row['nickname'] or row['user_id']}（QQ {row['user_id']}）："
+                                    f"{row['text']}"
+                                ),
+                                "ts": row["created_at"],
+                            }
+                            for row in group_messages
+                            if str(row.get("text") or "").strip()
+                        )
+                        messages.sort(key=lambda item: float(item.get("ts") or 0))
+                        messages = messages[-min(max(int(limit), 1), 200) :]
+                    except Exception:
+                        logging.warning("读取群消息上下文失败：%s", group_id, exc_info=True)
             return {
                 "key": entry["key"],
                 "label": entry.get("label") or entry["key"],
                 "thread_id": thread_id,
-                "has_context": bool(thread_id),
+                "has_context": bool(entry.get("has_context")),
                 "turns": entry.get("turns", 0),
-                "messages": self._read_context_messages(thread_id, limit),
+                "messages": messages,
             }
 
         @app.post("/api/contexts/clear", dependencies=[Depends(self._require_auth)])
@@ -661,6 +757,17 @@ class WebPanel:
                     "message": "当前没有会话存储，无法清除",
                 }
             try:
+                thread_id = str(store.get_persona_thread(key) or "")
+                deleted_runs = await asyncio.to_thread(
+                    self._delete_context_history, thread_id
+                )
+                deleted_group_messages = 0
+                if key.startswith("g:") and parse_group_member_key(key) is None:
+                    state_db = getattr(self.bridge, "state_db", None)
+                    if state_db is not None:
+                        deleted_group_messages = await asyncio.to_thread(
+                            state_db.delete_group_context, key[2:]
+                        )
                 cleared = bool(store.reset_persona(key))
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"清除失败：{exc}") from exc
@@ -669,7 +776,14 @@ class WebPanel:
                 "ok": True,
                 "key": key,
                 "cleared": cleared,
-                "message": "已清除该上下文" if cleared else "该上下文没有可清除的历史",
+                "deleted_runs": deleted_runs,
+                "deleted_group_messages": deleted_group_messages,
+                "message": (
+                    f"已永久删除该上下文（模型历史 {deleted_runs} 条，"
+                    f"群消息 {deleted_group_messages} 条）"
+                    if cleared or deleted_runs or deleted_group_messages
+                    else "该上下文没有可清除的历史"
+                ),
             }
 
         @app.post("/api/contexts/clear_group", dependencies=[Depends(self._require_auth)])
@@ -691,19 +805,38 @@ class WebPanel:
                     "message": "当前没有会话存储，无法清除",
                 }
             cleared = 0
+            deleted_runs = 0
+            deleted_group_messages = 0
             for key in keys:
                 try:
+                    thread_id = str(store.get_persona_thread(key) or "")
+                    deleted_runs += await asyncio.to_thread(
+                        self._delete_context_history, thread_id
+                    )
                     if store.reset_persona(key):
                         cleared += 1
                 except Exception:
                     logging.warning("清除上下文失败：%s", key, exc_info=True)
+            state_db = getattr(self.bridge, "state_db", None)
+            if state_db is not None:
+                try:
+                    deleted_group_messages = await asyncio.to_thread(
+                        state_db.delete_group_context, group_id
+                    )
+                except Exception:
+                    logging.warning("删除群消息上下文失败：%s", group_id, exc_info=True)
             self._invalidate_scopes()
             return {
                 "ok": True,
                 "group_id": group_id,
                 "cleared": cleared,
                 "total": len(keys),
-                "message": f"已清除 {cleared}/{len(keys)} 个成员的上下文",
+                "deleted_runs": deleted_runs,
+                "deleted_group_messages": deleted_group_messages,
+                "message": (
+                    f"已清除 {cleared}/{len(keys)} 个上下文，"
+                    f"永久删除模型历史 {deleted_runs} 条、群消息 {deleted_group_messages} 条"
+                ),
             }
 
         # ---- 提醒 ----

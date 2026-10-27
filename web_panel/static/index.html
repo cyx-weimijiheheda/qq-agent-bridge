@@ -805,7 +805,8 @@ function fmtTs(ts) {
 function ctxSub(item) {
   const bits = [];
   if (item.has_context) {
-    bits.push("线程 " + String(item.thread_id || "").slice(0, 12));
+    if (item.thread_id) bits.push("线程 " + String(item.thread_id).slice(0, 12));
+    else if (item.shared) bits.push("整群共享");
     bits.push((item.turns || 0) + " 轮");
   } else {
     bits.push("无历史");
@@ -868,7 +869,7 @@ function ctxSection(title, sub) {
 function ctxGroupHeader(group) {
   const div = ctxSection(
     "群 " + group.group_id,
-    group.members.length + " 个成员 · " + group.contexts + " 个有上下文"
+    group.members.filter((item) => !item.shared).length + " 个成员 · " + group.contexts + " 个有上下文"
   );
   const btn = document.createElement("button");
   btn.className = "btn danger";
@@ -931,7 +932,7 @@ async function viewContext(key) {
 }
 
 async function clearContext(key, label) {
-  if (!confirm("清除「" + label + "」的对话上下文？\n长期记忆（memory.md）不会被删除。")) return;
+  if (!confirm("永久删除「" + label + "」的数据库对话上下文？\n此操作会删除该线程的模型历史；整群上下文还会删除该群保存的消息记录。长期记忆（memory.md）不会被删除。")) return;
   try {
     const d = await api("/api/contexts/clear", { method: "POST", body: { key } });
     toast(d.message || "已清除", d.ok === false ? "bad" : "good");
@@ -942,7 +943,7 @@ async function clearContext(key, label) {
 }
 
 async function clearGroupContext(groupId) {
-  if (!confirm("清空群 " + groupId + " 里所有成员的上下文？\n长期记忆不会被删除，只重置会话。")) return;
+  if (!confirm("永久删除群 " + groupId + " 的共享上下文、成员历史和数据库消息记录？\n长期记忆不会被删除。")) return;
   try {
     const d = await api("/api/contexts/clear_group", {
       method: "POST",

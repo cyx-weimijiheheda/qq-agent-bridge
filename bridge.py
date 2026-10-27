@@ -56,6 +56,7 @@ class MessageBuffer:
         self.sender_name = sender_name
         # 与 texts 平行，群聊里用于标注每条是谁说的
         self.senders: list[str] = []
+        self.message_ids: list[str] = []
         # 群聊里只要攒进了一条非白名单成员的消息，整批就降为受限工具档
         self.full_access = True
         self.texts: list[str] = []
@@ -264,15 +265,14 @@ class Bridge:
         """群聊事件的准入判断；不满足条件的直接返回 None（完全不进 buffer）。
 
         - 总开关关闭时一律忽略
-        - 只有 @ 到机器人的消息才算（@全体成员不算）
+        - 所有群消息都允许进入群上下文存储；只有 @ 到机器人时才触发模型回复
+        - @全体成员不算机器人提及
         - 配了群白名单时只处理白名单内的群
         """
         if not self.cfg.get("group_enabled", False):
             return None
         info = extract_group_message(event, self.self_id)
         if not info:
-            return None
-        if not info.get("mentioned_bot"):
             return None
         whitelist = self.cfg.get("group_whitelist") or []
         if whitelist and info.get("group_id") not in whitelist:
@@ -281,14 +281,46 @@ class Bridge:
         return info
 
     async def _handle_group_event(self, info: dict[str, Any]) -> None:
-        """群消息入缓冲。
+        """群消息写入整群上下文；只有 @ 机器人的消息进入模型缓冲。
 
         与私聊的关键差异：不碰 pending / 主控转交 / feedback 日志 ——
         这几处都是全局单文件状态，群消息流进去会吞掉主人的待确认回复。
         """
-        if is_duplicate(info["message_id"], self.seen_ids):
+        if self.self_id and str(info.get("user_id") or "") == self.self_id:
+            return
+        message_id = str(info.get("message_id") or f"local-{time.time_ns()}")
+        info["message_id"] = message_id
+        if is_duplicate(message_id, self.seen_ids):
             return
         key = group_key(info["group_id"])
+        state_db = getattr(self, "state_db", None)
+        if state_db is not None:
+            try:
+                state_db.touch_group_member(info["group_id"], info["user_id"], info["nickname"])
+                context_text = str(info.get("text") or "")
+                for field, label in (("images", "图片"), ("videos", "视频"), ("files", "文件")):
+                    if info.get(field):
+                        context_text = (context_text + " " if context_text else "") + f"[{label}]"
+                for field in ("faces", "mfaces"):
+                    if info.get(field):
+                        context_text = (context_text + " " if context_text else "") + "[表情]"
+                state_db.add_group_context_message(
+                    info["group_id"],
+                    message_id,
+                    info["user_id"],
+                    info["nickname"],
+                    context_text,
+                    mentioned_bot=bool(info.get("mentioned_bot")),
+                )
+            except Exception:
+                logging.warning(
+                    "记录群上下文失败：group=%s message=%s",
+                    info.get("group_id"),
+                    message_id,
+                    exc_info=True,
+                )
+        if not info.get("mentioned_bot"):
+            return
         allowed = set(self.cfg.get("group_full_access_qq") or self.cfg["full_access_qq"])
         buf = self.buffers.get(key)
         if buf is None:
@@ -303,10 +335,12 @@ class Bridge:
             self.buffers[key] = buf
         buf.sender_id = info["user_id"]
         buf.sender_name = info["nickname"]
+        buf.message_ids.append(message_id)
         # 攒进一条非白名单成员的消息，整批就降为受限工具档
         buf.full_access = buf.full_access and info["user_id"] in allowed
         if info["text"]:
-            buf.add_text(info["text"], speaker=info["nickname"] or info["user_id"])
+            speaker = info["nickname"] or info["user_id"]
+            buf.add_text(info["text"], speaker=f"{speaker}（QQ {info['user_id']}）")
         for image in info["images"]:
             buf.add_image(image)
         for video in info["videos"]:
