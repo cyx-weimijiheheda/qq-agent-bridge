@@ -786,18 +786,22 @@ class WebPanel:
             # 增量模式的 since 永远停在行边界上，首行是完整的，不能丢。
             raw_lines = raw_lines[1:]
 
-        if len(raw_lines) > max_lines:
+        # 一条日志可能带多行正文；先按「行首是时间戳+级别」切成记录，
+        # 续行跟着记录走，截断和过滤都以记录为单位，避免把一条记录撕开。
+        records = self._split_records(raw_lines)
+        if len(records) > max_lines:
             truncated = True
             if incremental and not rotated:
-                # 增量模式保留最前面的，并据此回收偏移，保证一行都不丢
-                raw_lines = raw_lines[:max_lines]
-                consumed = start + sum(len(x.encode("utf-8")) + 1 for x in raw_lines)
+                # 增量模式保留最前面的，并据此回收偏移，保证一条都不丢
+                records = records[:max_lines]
+                kept_lines = [line for record in records for line in record]
+                consumed = start + sum(len(x.encode("utf-8")) + 1 for x in kept_lines)
             else:
-                raw_lines = raw_lines[-max_lines:]
+                records = records[-max_lines:]
 
         result.update(
             {
-                "lines": self._filter_lines(raw_lines, level, query),
+                "lines": self._filter_records(records, level, query),
                 "offset": consumed,
                 "truncated": truncated,
                 "rotated": rotated,
@@ -806,18 +810,40 @@ class WebPanel:
         return result
 
     @staticmethod
-    def _filter_lines(lines: list[str], level: str, query: str) -> list[str]:
+    def _split_records(lines: list[str]) -> list[list[str]]:
+        """把原始行按记录分组：以「时间戳 + 级别」开头的是新记录。
+
+        开头不匹配的续行是窗口截断留下的孤儿（它的首行在窗口之外），直接丢掉，
+        否则会被当成一条没有级别的独立记录显示出来。
+        """
+        records: list[list[str]] = []
+        headed = True
+        for line in lines:
+            if _LEVEL_RE.match(line):
+                records.append([line])
+                headed = True
+            elif not records or not headed:
+                # 不含时间戳的普通文本：每行各算一条，不做续行合并，
+                # 否则纯文本日志会被并成一坨，按关键字过滤时整段返回。
+                records.append([line])
+                headed = False
+            else:
+                records[-1].append(line)
+        return records
+
+    @staticmethod
+    def _filter_records(records: list[list[str]], level: str, query: str) -> list[str]:
+        """按记录过滤再摊平：级别看记录首行，关键字匹配记录内任意一行。"""
         threshold = _LEVEL_ORDER.get(str(level).upper(), 0) if level else 0
         needle = str(query or "").lower()
         kept: list[str] = []
-        last_level = _LEVEL_ORDER["INFO"]
-        for line in lines:
-            last_level = _line_level(line, last_level)
-            if threshold and last_level < threshold:
+        for record in records:
+            record_level = _line_level(record[0], _LEVEL_ORDER["INFO"])
+            if threshold and record_level < threshold:
                 continue
-            if needle and needle not in line.lower():
+            if needle and not any(needle in line.lower() for line in record):
                 continue
-            kept.append(line)
+            kept.extend(record)
         return kept
 
     # ---- 路由 ----
