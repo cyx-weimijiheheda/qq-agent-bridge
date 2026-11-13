@@ -282,3 +282,52 @@ def test_run_defaults_to_full_access_private(tmp_path, monkeypatch):
     asyncio.run(client.run("你好", "t-1"))
     assert captured["full_access"] is True
     assert captured["group"] is False
+
+def test_normalize_chat_path_variants():
+    """路径配置允许省略前导斜杠，也容忍误填完整 URL。"""
+    from agent_client import _normalize_chat_path
+
+    assert _normalize_chat_path(None) == "/chat/completions"
+    assert _normalize_chat_path("") == "/chat/completions"
+    assert _normalize_chat_path("/completions") == "/completions"
+    assert _normalize_chat_path("completions") == "/completions"
+    assert _normalize_chat_path("https://gw.example/v1/completions") == "/v1/completions"
+
+
+def test_chat_path_rewrite_client_only_touches_chat_completions():
+    """改写只命中 /chat/completions，其它路径原样透传。"""
+    import httpx
+    from agent_client import _PathRewriteClient
+
+    client = _PathRewriteClient(chat_path="/completions")
+    base = "https://gw.example/v1"
+    assert str(client._rewrite(httpx.URL(f"{base}/chat/completions"))) == f"{base}/completions"
+    assert str(client._rewrite(httpx.URL(f"{base}/models"))) == f"{base}/models"
+
+
+def test_chat_path_rewrite_is_noop_on_default():
+    """默认路径下不改写，避免影响标准 OpenAI 兼容服务。"""
+    import httpx
+    from agent_client import _PathRewriteClient
+
+    client = _PathRewriteClient(chat_path="/chat/completions")
+    url = httpx.URL("https://gw.example/v1/chat/completions")
+    assert client._rewrite(url) is url
+
+
+def test_force_stream_uses_streaming_run(tmp_path, monkeypatch):
+    """api_force_stream 打开时改走流式聚合路径。"""
+    client = make_client(tmp_path, monkeypatch, api_force_stream=True)
+    agent = FakeAgent(content="流式回复")
+    monkeypatch.setattr(client, "_get_agent", lambda *a, **k: agent)
+    called = {}
+
+    async def fake_streaming(_agent, prompt, session_id, images):
+        called["session_id"] = session_id
+        return FakeRunOutput("流式回复", session_id)
+
+    monkeypatch.setattr(client, "_arun_streaming", fake_streaming)
+    content, sid = asyncio.run(client.run("你好", "t-1"))
+    assert content == "流式回复"
+    assert called["session_id"] == "t-1"
+    assert agent.calls == []  # 未走普通 arun

@@ -49,7 +49,7 @@ GROUPS: list[tuple[str, str, list[str]]] = [
     (
         "模型接口",
         "任何 OpenAI 兼容服务都能用：官方 OpenAI、DeepSeek、中转站、自建网关。",
-        ["api_base_url", "api_key", "model", "request_timeout", "keep_proxy", "user_agent"],
+        ["api_base_url", "api_chat_path", "api_force_stream", "api_key", "model", "request_timeout", "keep_proxy", "user_agent"],
     ),
     (
         "工具与记忆",
@@ -237,6 +237,8 @@ DESCRIPTIONS: dict[str, str] = {
     "voice_cache_dir": "TTS 合成结果的缓存目录",
     # 模型接口
     "api_base_url": "OpenAI 兼容接口地址，例如 `https://api.openai.com/v1`、`https://api.deepseek.com/v1`",
+    "api_chat_path": "对话请求路径，默认 `/chat/completions`；网关挂在别的路径时改这里（只写路径，不带域名）",
+    "api_force_stream": "网关只接受流式请求时打开；内部改用流式并自动拼接分片",
     "api_key": "接口密钥。建议用环境变量 `QQBOT_API_KEY` 注入，不要写进文件",
     "model": "模型名，例如 `gpt-4o-mini`、`deepseek-chat`；留空用 `OPENAI_MODEL` 环境变量",
     "request_timeout": "单次模型请求的兜底超时（秒）",

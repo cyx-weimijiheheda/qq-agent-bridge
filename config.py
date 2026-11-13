@@ -66,6 +66,13 @@ DEFAULTS: dict[str, Any] = {
     # ---------- 模型接口（任意 OpenAI 兼容服务）----------
     "model": "",  # 例如 gpt-4o-mini / deepseek-chat
     "api_base_url": "",  # 例如 https://api.openai.com/v1
+    # 请求路径：默认走 OpenAI 标准的 /chat/completions。
+    # 少数网关把对话接口挂在 /completions（无 chat 段）下，或自定前缀，改这里即可。
+    # 只写路径部分，不要带域名；留空 = /chat/completions。
+    "api_chat_path": "/chat/completions",
+    # 网关要求必须流式时打开：内部改用流式请求再把分片拼成完整回复。
+    # 某些中转/代理只接受 stream=true，非流式会返回 streaming_required。
+    "api_force_stream": False,
     "api_key": "",  # 建议用环境变量 QQBOT_API_KEY 注入，不要写进文件
     "memory_db": "memory.db",  # 长期记忆 / 会话持久化用的 SQLite 文件
     "tools_enabled": True,  # 总开关：助手能不能调用工具

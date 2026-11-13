@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,48 @@ class AgentError(Exception):
         super().__init__(message)
         self.timeout = timeout
         self.thread_id = thread_id
+
+
+def _normalize_chat_path(path: str | None) -> str:
+    """把配置里的对话路径规整成以 / 开头的纯路径。
+
+    只接受路径部分；误填了完整 URL 时取它的 path，避免拼出双域名。
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        return "/chat/completions"
+    if "://" in raw:
+        from urllib.parse import urlsplit
+
+        raw = urlsplit(raw).path or "/chat/completions"
+    if not raw.startswith("/"):
+        raw = "/" + raw
+    return re.sub(r"/{2,}", "/", raw).rstrip("/") or "/chat/completions"
+
+
+class _PathRewriteClient(httpx.AsyncClient):
+    """把 OpenAI SDK 写死的 /chat/completions 改写到网关实际使用的路径。
+
+    OpenAI SDK 在 chat.completions.create 里把路径硬编码为 /chat/completions，
+    agno 也固定调用那个方法，所以只能在这一层拦。只改这一条路径，其它请求
+    （文件上传、/models 等）原样透传。
+    """
+
+    def __init__(self, *args: Any, chat_path: str = "/chat/completions", **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._chat_path = _normalize_chat_path(chat_path)
+
+    def _rewrite(self, url: Any) -> Any:
+        if self._chat_path == "/chat/completions":
+            return url
+        text = str(url)
+        if text.endswith("/chat/completions"):
+            return httpx.URL(text[: -len("/chat/completions")] + self._chat_path)
+        return url
+
+    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:  # type: ignore[override]
+        request.url = self._rewrite(request.url)
+        return await super().send(request, **kwargs)
 
 
 TOOL_SAFETY_INSTRUCTIONS = (
@@ -138,7 +181,12 @@ class AgentClient:
         # 的默认客户端或 deepcopy 出来的客户端重新捡起代理。
         # 需要走代理时把 config 里的 keep_proxy 打开（或设 QQBOT_KEEP_PROXY=1）。
         _purge_proxy_env(bool(cfg.get("keep_proxy", False)))
-        self._http_client = httpx.AsyncClient(trust_env=False)
+        # api_chat_path 非默认时，用改写客户端把 /chat/completions 换成网关实际路径
+        self._chat_path = _normalize_chat_path(cfg.get("api_chat_path"))
+        self._force_stream = bool(cfg.get("api_force_stream", False))
+        self._http_client = _PathRewriteClient(
+            trust_env=False, chat_path=self._chat_path
+        )
         self._agents: dict[tuple[str, str, float, bool, bool], Agent] = {}
         self._memory_manager: MemoryManager | None = None
 
@@ -430,6 +478,36 @@ class AgentClient:
             self._memory_manager = MemoryManager(model=memory_model, db=self.db)
         return self._memory_manager
 
+    async def _arun_streaming(
+        self,
+        agent: Agent,
+        prompt: str,
+        session_id: str,
+        images: list[Image] | None,
+    ) -> Any:
+        """走流式接口再收成完整结果。
+
+        有些网关（中转/代理）只接受 stream=true，非流式直接返回
+        streaming_required。这里取最后一个完整 RunOutput，语义与
+        agent.arun() 一致，失败信息也保持同样的抛法。
+        """
+        last_output: Any = None
+        async for event in agent.arun(
+            prompt,
+            session_id=session_id,
+            images=images,
+            stream=True,
+            yield_run_output=True,
+        ):
+            # yield_run_output=True 时最后会给出完整 RunOutput；其余是增量事件
+            if getattr(event, "event", "") == "RunCompleted":
+                last_output = event
+            elif hasattr(event, "content") and hasattr(event, "session_id"):
+                last_output = event
+        if last_output is None:
+            raise AgentError("模型没有返回结果", thread_id=session_id)
+        return last_output
+
     def _get_agent(
         self,
         model: str,
@@ -517,14 +595,22 @@ class AgentClient:
             "完整" if full_access else "受限",
         )
         try:
-            run_output = await asyncio.wait_for(
-                agent.arun(
-                    prompt,
-                    session_id=session_id,
-                    images=images or None,
-                ),
-                timeout=effective_timeout,
-            )
+            if self._force_stream:
+                run_output = await asyncio.wait_for(
+                    self._arun_streaming(
+                        agent, prompt, session_id, images or None
+                    ),
+                    timeout=effective_timeout,
+                )
+            else:
+                run_output = await asyncio.wait_for(
+                    agent.arun(
+                        prompt,
+                        session_id=session_id,
+                        images=images or None,
+                    ),
+                    timeout=effective_timeout,
+                )
         except TimeoutError as exc:
             raise AgentError(
                 "模型处理超时，已终止任务",
