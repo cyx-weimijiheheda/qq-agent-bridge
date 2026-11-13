@@ -871,7 +871,14 @@ class Bridge:
                 "params": {"user_id": to_id(raw_id), "message": text},
             }
         await self.ws.send(json.dumps(payload, ensure_ascii=False))
-        _trace("send", "已发送到 %s（%s）%d 字：%s", target, scene, len(text), text[:120])
+        _trace(
+            "send",
+            "已发送到 %s（%s）%d 字",
+            target,
+            scene,
+            len(text),
+            body=text,
+        )
         self.store.mark_activity(target)
 
 

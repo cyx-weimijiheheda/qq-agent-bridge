@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 TRACE_TAGS = (
@@ -41,12 +42,33 @@ TRACE_TAGS = (
     "probe",
 )
 
+# 正文载荷标记：` {{BODY:"..."}}`，内容是 JSON 字符串（换行已转义成 \n）。
+# 放在行尾是为了不破坏「一行一条日志」的结构，网页端解析后可以展开成多行。
+BODY_MARKER = " {{BODY:%s}}"
 
-def trace(tag: str, message: str, *args: object, level: int = logging.INFO) -> None:
+
+def encode_body(text: str) -> str:
+    """把多行正文编码成能塞进单行日志的形式。"""
+    return BODY_MARKER % json.dumps(str(text or ""), ensure_ascii=False)
+
+
+def trace(
+    tag: str,
+    message: str,
+    *args: object,
+    level: int = logging.INFO,
+    body: str | None = None,
+) -> None:
     """写一条带轨迹标签的日志。
 
     tag 建议取 TRACE_TAGS 里的值；未知 tag 也能用，网页端会退化成默认颜色。
     `*args` 与 logging 的 %-格式化一致，不要在 message 里预先拼字符串，
     这样未命中任何处理器的场景下也不会白白格式化。
+
+    `body` 给整段正文（例如完整回复）：会被 JSON 转义后附在行尾，
+    日志仍然是一行一条，网页面板可以点开查看原文。
     """
-    logging.getLogger().log(level, "[%s] " + message, tag, *args, stacklevel=2)
+    suffix = encode_body(body) if body is not None else ""
+    logging.getLogger().log(
+        level, "[%s] " + message + suffix, tag, *args, stacklevel=2
+    )

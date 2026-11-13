@@ -31,3 +31,36 @@ def test_trace_tags_are_documented():
     """标签表供网页端着色使用，至少覆盖一次消息的主链路。"""
     for tag in ("recv", "route", "media", "prompt", "model", "reply", "send", "limit"):
         assert tag in TRACE_TAGS
+
+
+def test_encode_body_keeps_line_intact(caplog):
+    """多行正文编码后不产生真实换行，日志仍然一行一条。"""
+    import json as _json
+
+    from trace_log import encode_body
+
+    body = "第一行\n第二行\n\n第四行"
+    encoded = encode_body(body)
+    assert "\n" not in encoded
+    assert encoded.startswith(" {{BODY:")
+    raw = encoded[len(" {{BODY:") : -2]
+    assert _json.loads(raw) == body
+
+
+def test_trace_with_body_appends_marker(caplog):
+    """trace(..., body=) 把正文挂在行尾，正文里的换行被转义。"""
+    import json as _json
+
+    with caplog.at_level(logging.INFO):
+        trace("send", "已发送 %d 字", 5, body="a\nb")
+    line = caplog.text.strip().splitlines()[-1]
+    assert "[send] 已发送 5 字 {{BODY:" in line
+    assert "\n" not in line
+    payload = _json.loads(line[line.index("{{BODY:") + len("{{BODY:") : -2])
+    assert payload == "a\nb"
+
+
+def test_trace_without_body_has_no_marker(caplog):
+    with caplog.at_level(logging.INFO):
+        trace("recv", "收到")
+    assert "{{BODY:" not in caplog.text

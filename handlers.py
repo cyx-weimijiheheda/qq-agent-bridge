@@ -553,7 +553,13 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
 
     if new_thread_id:
         bridge.store.set_persona_thread(context_key, new_thread_id)
-    _trace("reply", "群 %s 模型输出 %d 字", buf.group_id, len(reply or ""))
+    _trace(
+        "reply",
+        "群 %s 模型输出 %d 字",
+        buf.group_id,
+        len(reply or ""),
+        body=reply or "",
+    )
     reply = sanitize_persona_reply(reply, bridge.cfg)
     if not getattr(buf, "triggered_by_mention", True) and reply.strip() == "[不插话]":
         _trace("reply", "判断当前群聊没有自然插话点：%s", session_key)
@@ -878,6 +884,13 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
             bridge.store.increment_persona_turns(user_id)
         if persona_mode:
             reply = sanitize_persona_reply(reply, bridge.cfg)
+        _trace(
+            "reply",
+            "私聊 %s 模型输出 %d 字",
+            user_id,
+            len(reply or ""),
+            body=reply or "",
+        )
         await send_reply(
             bridge,
             user_id,

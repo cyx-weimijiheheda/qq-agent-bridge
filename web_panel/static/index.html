@@ -302,6 +302,21 @@
   .logline .tok-str  { color: var(--tok-str); }
   .logline.trace-only-hidden { display: none; }
 
+  /* 日志里的整段正文：默认折叠，点开再看原文 */
+  .logline .body-toggle {
+    margin-left: 6px; padding: 0 7px; border-radius: 4px; border: 0;
+    background: #2d2b3a; color: #a9a2be; font: 11.5px var(--mono);
+    cursor: pointer;
+  }
+  .logline .body-toggle:hover { background: #3a3750; color: #d6d2e2; }
+  .logline .body-text {
+    display: block; margin: 4px 0 6px; padding: 8px 10px;
+    background: #17161f; border-left: 2px solid var(--line);
+    border-radius: 4px; color: #d6d2e2; white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .logline .body-inline { color: var(--tok-str); }
+
   /* ── 聊天 ─────────────────────────────────────────── */
   .chatlog { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; }
   .bubble { max-width: 78%; padding: 8px 12px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -640,13 +655,53 @@ function logBodyTokens(text) {
   return frag;
 }
 
+/* 行尾的 {{BODY:"..."}} 是完整正文（JSON 转义），拆出来单独渲染 */
+const LOG_BODY_RE = / \{\{BODY:([\s\S]*)\}\}$/;
+
+function splitLogBody(text) {
+  const m = text.match(LOG_BODY_RE);
+  if (!m) return { visible: text, body: null };
+  const visible = text.slice(0, m.index);
+  try {
+    return { visible, body: JSON.parse(m[1]) };
+  } catch (_) {
+    return { visible, body: null };
+  }
+}
+
+/* 单行短正文直接附在行尾；多行或过长的给一个展开按钮 */
+function appendLogBody(parent, body) {
+  if (body === null || body === undefined || body === "") return;
+  const text = String(body).replace(/\n+$/, "");
+  const lines = text.split("\n").length;
+  if (lines === 1 && text.length <= 120) {
+    const inline = logSpan("body-inline", "「" + text + "」");
+    parent.append(inline);
+    return;
+  }
+  const preview = lines > 1 ? lines + " 行 / " + text.length + " 字" : text.length + " 字";
+  const btn = document.createElement("button");
+  btn.className = "body-toggle";
+  btn.textContent = "展开正文 · " + preview;
+  const box = document.createElement("span");
+  box.className = "body-text";
+  box.hidden = true;
+  box.append(logBodyTokens(text));
+  btn.addEventListener("click", () => {
+    box.hidden = !box.hidden;
+    btn.textContent = box.hidden ? "展开正文 · " + preview : "收起正文";
+  });
+  parent.append(btn, box);
+}
+
 function renderLogLine(line) {
   const frag = document.createDocumentFragment();
   const m = line.match(LOG_LINE_RE);
   if (!m) {
     /* 缩进的堆栈续行：原样输出，交给级别色处理 */
-    frag.append(logSpan("", line));
-    return { frag, tag: "" };
+    const split = splitLogBody(line);
+    frag.append(logSpan("", split.visible));
+    return { frag, tag: "", body: split.body };
   }
   const [, ts, lvl, mod, rest] = m;
   frag.append(logSpan("ts", ts.slice(11) + " "));
@@ -662,8 +717,9 @@ function renderLogLine(line) {
     frag.append(logSpan("tag tag-" + tag, tag));
     body = body.slice(t[0].length);
   }
-  frag.append(logBodyTokens(body));
-  return { frag, tag };
+  const split = splitLogBody(body);
+  frag.append(logBodyTokens(split.visible));
+  return { frag, tag, body: split.body };
 }
 
 function appendLogs(lines, dividerText) {
@@ -693,6 +749,7 @@ function appendLogs(lines, dividerText) {
     txt.className = "txt";
     const rendered = renderLogLine(line);
     txt.append(rendered.frag);
+    appendLogBody(txt, rendered.body);
     if (rendered.tag) {
       row.dataset.trace = "1";
       if (state.logs.traceOnly) row.classList.add("trace-only-hidden");
