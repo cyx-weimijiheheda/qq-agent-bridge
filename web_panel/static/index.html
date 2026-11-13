@@ -1074,6 +1074,15 @@ function markSettingDirty(event) {
   $("settingsMeta").textContent = state.settings.dirty.size + " 项未保存";
 }
 
+/* 记住哪些类别被展开过：保存后原地重建，面板回到保存前的开合状态 */
+function currentOpenGroups() {
+  const open = new Set();
+  for (const group of document.querySelectorAll(".settings-group")) {
+    if (group.open) open.add(group.dataset.category || "");
+  }
+  return open;
+}
+
 function settingRow(entry) {
   const row = document.createElement("div");
   row.className = "setting-row";
@@ -1107,7 +1116,10 @@ function settingRow(entry) {
   return row;
 }
 
-async function loadSettings() {
+async function loadSettings(opts) {
+  const options = opts || {};
+  /* 默认全类型折叠；手动重载时把用户已展开的类别恢复回去 */
+  const reopen = options.keepOpen === false ? new Set() : currentOpenGroups();
   const root = $("settingsGroups");
   try {
     const data = await api("/api/settings");
@@ -1118,7 +1130,8 @@ async function loadSettings() {
       const entries = state.settings.entries.filter((entry) => entry.category === category);
       const group = document.createElement("details");
       group.className = "settings-group";
-      group.open = category === "群聊" || category === "人设与提示词";
+      group.dataset.category = category;
+      group.open = reopen.has(category);
       const summary = document.createElement("summary");
       summary.textContent = category + " · " + entries.length + " 项";
       group.append(summary);
@@ -1130,6 +1143,28 @@ async function loadSettings() {
     root.replaceChildren(emptyRow(err.message));
     toast(err.message, "bad");
   }
+}
+
+/* 保存成功后原地更新，不重建 DOM：展开状态、滚动位置、光标都保持不变 */
+function applySavedValues(values, result) {
+  for (const key of Object.keys(values)) {
+    const entry = state.settings.entries.find((item) => item.key === key);
+    if (!entry) continue;
+    entry.value = entry.secret ? null : values[key];
+    if (entry.secret) entry.is_set = true;
+    entry.source = "配置文件";
+    if (result && Array.isArray(result.restart_required) && result.restart_required.includes(key)) {
+      entry.restart_required = true;
+    }
+  }
+  for (const key of Object.keys(values)) {
+    state.settings.dirty.delete(key);
+    const row = document.querySelector('.setting-row.is-dirty .setting-input[data-key="' + key.replaceAll('"', '\\"') + '"]');
+    row?.closest(".setting-row")?.classList.remove("is-dirty");
+  }
+  $("settingsMeta").textContent = state.settings.dirty.size
+    ? state.settings.dirty.size + " 项未保存"
+    : state.settings.entries.length + " 项配置";
 }
 
 async function saveSettings() {
@@ -1152,12 +1187,12 @@ async function saveSettings() {
   try {
     const result = await api("/api/settings", { method: "POST", body: { values } });
     toast(result.message || "设置已保存", "good");
-    await loadSettings();
+    applySavedValues(values, result);
   } catch (err) { toast(err.message, "bad"); }
   finally { $("settingsSave").disabled = false; }
 }
 
-$("settingsRefresh").addEventListener("click", loadSettings);
+$("settingsRefresh").addEventListener("click", () => loadSettings());
 $("settingsSave").addEventListener("click", saveSettings);
 $("settingsSearch").addEventListener("input", () => {
   const query = $("settingsSearch").value.trim().toLowerCase();

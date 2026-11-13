@@ -1,5 +1,8 @@
 # ---- 本地配置与密钥（绝不提交）----
 config.json
+config.json.bak*
+config.json.*.bak
+*.bak.json
 .env
 *.local.json
 
