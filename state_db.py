@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -470,14 +471,107 @@ class StateDB:
             rows = []
         if rows:
             return rows
-        # FTS5 对中文/复杂查询可能不命中时退化为 LIKE 子串搜索。
+        # FTS5 没有中文分词，整句 MATCH 基本命不中英文以外的长查询。
+        # 先按整句子串兜底，再不中就把查询拆成词/三字窗逐项 LIKE 并打分。
         like = f"%{trimmed}%"
-        return self._query(
-            "SELECT path, title, substr(content, 1, 200) AS snippet"
+        rows = self._query(
+            "SELECT path, title, content"
             " FROM knowledge_fts WHERE title LIKE ? OR content LIKE ?"
             " ORDER BY rowid DESC LIMIT ?",
             (like, like, int(limit)),
         )
+        if rows:
+            return [
+                {
+                    "path": row["path"],
+                    "title": row["title"],
+                    "snippet": self._snippet_around(row.get("content") or "", [trimmed]),
+                }
+                for row in rows
+            ]
+        return self._search_documents_by_terms(trimmed, int(limit))
+
+    @staticmethod
+    def _knowledge_terms(query: str, max_terms: int = 12) -> list[str]:
+        """把查询拆成可用于 LIKE 的词：英文/数字整段，中文取三字窗。"""
+        parts = re.findall(r"[0-9A-Za-z_]+|[\u4e00-\u9fff]+", query)
+        # 「是什么梗」「怎么办」「什么意思」这类疑问壳没有检索价值，
+        # 留着会把「梗」字在整库里的命中全拉平，压掉真正的关键词。
+        filler = (
+            "是什么梗", "什么梗", "是什么", "什么意思", "怎么办", "怎么样",
+            "为什么", "怎么", "如何", "请问", "一下", "吗", "呢", "啊",
+        )
+        for word in filler:
+            parts = [part.replace(word, "") for part in parts]
+        parts = [part for part in parts if part.strip()]
+        terms: list[str] = []
+        for part in parts:
+            is_cjk = bool(re.match(r"[\u4e00-\u9fff]", part))
+            if not is_cjk or len(part) <= 6:
+                # 英文/数字整段就是一个可检索的词；短中文（≤6 字）整段用，
+                # 再补它的双字前缀，避免「安迪」这种两字词条被三字窗漏掉
+                candidates = [part]
+                if is_cjk and len(part) > 2:
+                    candidates += [part[:2], part[-2:]]
+            else:
+                candidates = [part[i : i + 3] for i in range(len(part) - 2)]
+            for candidate in candidates:
+                if candidate and candidate not in terms:
+                    terms.append(candidate)
+        return terms[:max_terms]
+
+    def _search_documents_by_terms(self, query: str, limit: int) -> list[dict[str, Any]]:
+        terms = self._knowledge_terms(query)
+        if not terms:
+            return []
+        clause = " OR ".join(["title LIKE ? OR content LIKE ?"] * len(terms))
+        params: list[Any] = []
+        for term in terms:
+            params.extend([f"%{term}%", f"%{term}%"])
+        candidates = self._query(
+            "SELECT path, title, substr(content, 1, 200) AS snippet, content"
+            f" FROM knowledge_fts WHERE {clause} LIMIT 200",
+            tuple(params),
+        )
+        if not candidates:
+            return []
+        # 命中词越多越靠前，同分按内容长度取短的（更聚焦）
+        scored = []
+        for row in candidates:
+            haystack = f"{row.get('title') or ''}{row.get('content') or ''}"
+            score = sum(1 for term in terms if term in haystack)
+            scored.append((score, -len(row.get("content") or ""), row))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        results = []
+        for _, _, row in scored[:limit]:
+            results.append(
+                {
+                    "path": row["path"],
+                    "title": row["title"],
+                    # 摘要截在命中词附近，比固定取开头 200 字更有用
+                    "snippet": self._snippet_around(row.get("content") or "", terms),
+                }
+            )
+        return results
+
+    @staticmethod
+    def _snippet_around(content: str, terms: list[str], radius: int = 60, size: int = 180) -> str:
+        index = -1
+        for term in terms:
+            found = content.find(term)
+            if found >= 0:
+                index = found
+                break
+        if index < 0:
+            index = 0
+        start = max(0, index - radius)
+        end = start + size
+        snippet = content[start:end].replace("\n", " ").strip()
+        if start > 0:
+            snippet = "…" + snippet
+        if end < len(content):
+            snippet = snippet + "…"
+        return snippet
 
     def clear_documents(self) -> None:
         self._execute("DELETE FROM knowledge_fts")

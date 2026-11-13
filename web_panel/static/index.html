@@ -160,8 +160,8 @@
   .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
 
   /* ── 面板 ─────────────────────────────────────────── */
-  main { flex: 1; min-height: 0; display: flex; }
-  .panel { display: none; flex: 1; min-height: 0; flex-direction: column; padding: 14px 16px; gap: 12px; }
+  main { flex: 1; min-height: 0; display: flex; min-width: 0; }
+  .panel { display: none; flex: 1; min-height: 0; min-width: 0; flex-direction: column; padding: 14px 16px; gap: 12px; }
   .panel.active { display: flex; }
 
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -240,14 +240,14 @@
 
   /* ── 日志 ─────────────────────────────────────────── */
   .logview {
-    flex: 1; min-height: 0; overflow: auto;
+    flex: 1; min-height: 0; min-width: 0; overflow: auto;
     background: #100f16; border: 1px solid var(--line); border-radius: var(--r);
     font-family: var(--mono); font-size: 12px; line-height: 1.65;
     padding: 6px 0;
   }
-  .logline { display: flex; padding-left: 0; }
+  .logline { display: flex; min-width: 0; padding-left: 0; }
   .logline .tick { width: 3px; flex: none; background: transparent; }
-  .logline .txt { padding: 0 12px 0 9px; white-space: pre-wrap; overflow-wrap: anywhere; color: #cdc8d8; }
+  .logline .txt { padding: 0 12px 0 9px; color: #cdc8d8; }
   .logline.lv-DEBUG    .tick { background: var(--lv-debug); }
   .logline.lv-INFO     .tick { background: var(--lv-info); }
   .logline.lv-WARNING  .tick { background: var(--lv-warning); }
@@ -258,19 +258,27 @@
   .logline.lv-CRITICAL .txt  { color: #e3bdee; }
   .logline.divider .txt { color: var(--muted); font-style: italic; }
 
-  /* 结构化日志：时间戳 / 级别 / 模块 / 轨迹标签 / 字面量分别着色 */
-  .logline .txt { line-height: 1.75; }
+  /* 结构化日志：一行内按列排布，正文吃掉剩余宽度并单行省略 */
+  .logline { max-width: 100%; }
+  .logline .txt {
+    display: flex; align-items: baseline; gap: 6px;
+    flex: 1 1 auto; min-width: 0; line-height: 1.75;
+    overflow: hidden;
+  }
+  .logline .body {
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .logline .ts {
-    display: inline-block; width: 96px; color: var(--tok-ts);
-    font-variant-numeric: tabular-nums;
+    flex: none; width: 96px; color: var(--tok-ts);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
   }
   .logline .mod {
-    display: inline-block; width: 116px; color: var(--tok-mod);
+    flex: none; width: 116px; color: var(--tok-mod);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    vertical-align: bottom;
   }
   .logline .lvl {
-    display: inline-block; width: 68px; font-weight: 600;
+    flex: none; width: 68px; font-weight: 600; white-space: nowrap;
     color: var(--lv-info);
   }
   /* 警告与错误整行给一点底色，扫日志时更容易定位 */
@@ -284,9 +292,9 @@
   .logline.lv-CRITICAL .lvl { color: var(--lv-critical); }
 
   .logline .tag {
-    display: inline-block; min-width: 52px; margin-right: 2px;
-    padding: 0 6px; border-radius: 4px; font-size: 11.5px;
-    background: #2a2836; color: #b9b2cc;
+    flex: none; min-width: 52px; padding: 0 6px;
+    border-radius: 4px; font-size: 11.5px;
+    background: #2a2836; color: #b9b2cc; white-space: nowrap;
   }
   .logline .tag-recv   { background: #23303d; color: #7fb3d5; }
   .logline .tag-route  { background: #2d2a3d; color: #a99bd8; }
@@ -341,13 +349,17 @@
 
   /* 日志里的整段正文：默认折叠，点开再看原文 */
   .logline .body-toggle {
+    flex: none; white-space: nowrap; align-self: center;
     margin-left: 6px; padding: 0 7px; border-radius: 4px; border: 0;
     background: #2d2b3a; color: #a9a2be; font: 11.5px var(--mono);
     cursor: pointer;
   }
   .logline .body-toggle:hover { background: #3a3750; color: #d6d2e2; }
+  /* 展开的正文在 .txt 内部独占一行：.txt 自己换行，正文块占满整宽 */
+  .logline .txt:has(.body-text:not([hidden])) { flex-wrap: wrap; }
   .logline .body-text {
-    display: block; margin: 4px 0 6px; padding: 8px 10px;
+    display: block; flex: 0 0 100%; width: 100%;
+    margin: 4px 0 6px 0; padding: 8px 10px;
     background: #17161f; border-left: 2px solid var(--line);
     border-radius: 4px; color: #d6d2e2; white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -381,6 +393,13 @@
     .statusrail { order: 3; width: 100%; }
     .brand h1 span { display: none; }
     .row .id { min-width: 34px; }
+    /* 窄屏放不下四列：去掉模块名，时间戳只留时分秒，级别压到最短 */
+    .logline .mod { display: none; }
+    .logline .ts  { width: 62px; }
+    .logline .lvl { width: 46px; font-size: 11px; }
+    .logline .lvl-full { display: none; }
+    .logline .tag { min-width: 0; margin-right: 4px; }
+    .logline .body-toggle { margin-left: 4px; padding: 0 5px; font-size: 11px; }
   }
 </style>
 </head>
@@ -711,9 +730,13 @@ function renderLogHead(line) {
   }
   const [, ts, lvl, mod, rest] = m;
   frag.append(logSpan("ts", ts.slice(11) + " "));
-  frag.append(logSpan("lvl", lvl));
+  const lvlEl = logSpan("lvl", lvl);
+  lvlEl.title = lvl;
+  frag.append(lvlEl);
   frag.append(logSpan("", " "));
-  frag.append(logSpan("mod", mod));
+  const modEl = logSpan("mod", mod);
+  modEl.title = mod;
+  frag.append(modEl);
   frag.append(logSpan("", " "));
   let body = rest;
   let tag = "";
@@ -729,7 +752,9 @@ function renderLogHead(line) {
     body = body.slice(0, bm.index);
     try { legacyBody = JSON.parse(bm[1]); } catch (_) { legacyBody = null; }
   }
-  frag.append(logSpan("", body));
+  const bodyEl = logSpan("body", body);
+  bodyEl.title = body;
+  frag.append(bodyEl);
   return { frag, tag, legacyBody };
 }
 

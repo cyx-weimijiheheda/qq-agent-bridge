@@ -130,7 +130,11 @@ def run_search_sync(
         "all_proxy",
     ):
         env.pop(proxy_key, None)
-    env.setdefault("GROK_API_KEY", load_search_api_key())
+    # 有 key 就透传；没有也不阻断 —— 脚本可以退到不需要密钥的搜索后端
+    try:
+        env.setdefault("GROK_API_KEY", load_search_api_key())
+    except ValueError:
+        pass
     proc = subprocess.run(
         cmd,
         capture_output=True,

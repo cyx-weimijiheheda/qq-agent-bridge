@@ -158,3 +158,41 @@ def test_distinct_user_ids(tmp_path):
     db.add_todo("web-main", "写周报")
     db.add_task("10001", "task", "跑个任务")
     assert db.distinct_user_ids() == ["10001", "web-main"]
+
+
+def test_knowledge_search_falls_back_to_terms(tmp_path):
+    """中文长问句整句 MATCH 命不中时，按词拆分仍然能搜到。"""
+    db = StateDB(tmp_path / "state.db")
+    db.clear_documents()
+    db.add_document(
+        "/docs/faq.md",
+        0,
+        "faq.md",
+        "# 常见问题\n**机器人不回消息**：先看面板连接状态，确认 SnowLuma 在 3001 上监听。",
+    )
+    hits = db.search_documents("机器人不回消息怎么办", limit=3)
+    assert hits, "整句命不中时应回退到分词匹配"
+    assert "faq.md" in hits[0]["title"]
+    db.clear_documents()
+
+
+def test_knowledge_snippet_centers_on_match(tmp_path):
+    """摘要应截在命中词附近，而不是固定取文档开头。"""
+    db = StateDB(tmp_path / "state.db")
+    db.clear_documents()
+    filler = "无关内容。" * 80
+    db.add_document("/docs/long.md", 0, "long.md", filler + "这里是关键段落：日志轮转配置。" + filler)
+    hits = db.search_documents("日志轮转", limit=1)
+    assert hits
+    assert "日志轮转" in hits[0]["snippet"]
+    db.clear_documents()
+
+
+def test_knowledge_terms_split_mixed_query():
+    """英文/数字整段保留，中文长串切三字窗。"""
+    from state_db import StateDB as _StateDB
+
+    terms = _StateDB._knowledge_terms("SnowLuma 在3001上根本监听不了")
+    assert "SnowLuma" in terms          # 英文整段保留
+    assert "3001" in terms              # 数字整段保留
+    assert any(len(t) == 3 for t in terms)  # 长中文串切三字窗
