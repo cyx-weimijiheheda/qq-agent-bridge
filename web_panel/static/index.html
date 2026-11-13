@@ -315,6 +315,9 @@
     border-radius: 4px; color: #d6d2e2; white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+  /* display:block 会盖掉浏览器给 [hidden] 的默认 display:none，必须显式补回来，
+     否则正文块始终可见、展开按钮点了也没有反应 */
+  .logline .body-text[hidden] { display: none; }
   .logline .body-inline { color: var(--tok-str); }
 
   /* ── 聊天 ─────────────────────────────────────────── */
