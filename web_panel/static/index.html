@@ -29,16 +29,24 @@
     --sans: system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
     --r: 6px;
 
-    /* 日志着色：模块名、轨迹标签、字面量各一档 */
+    /* 日志着色：按消息类型（轨迹标签）给正文定色，同类型同颜色 */
     --tok-ts:      #5f5a72;
     --tok-mod:     #8f88a8;
-    --tok-url:     #6cb6ff;
-    --tok-num:     #d8b26a;
-    --tok-id:      #63c8b8;
-    --tok-err:     #ff8b8b;
-    --tok-ok:      #8ed08a;
-    --tok-cost:    #d8b26a;
     --tok-str:     #b8b0cc;
+    --msg-default: #cdc8d8;
+    --msg-recv:    #9dc0e8;
+    --msg-route:   #b9a9e6;
+    --msg-media:   #7fd2c2;
+    --msg-prompt:  #d9bd84;
+    --msg-model:   #c2a4f2;
+    --msg-tool:    #8ecae8;
+    --msg-reply:   #9ed7a0;
+    --msg-send:    #7fd7b2;
+    --msg-limit:   #e8b877;
+    --msg-task:    #a3b6e0;
+    --msg-cfg:     #aaa4bc;
+    --msg-web:     #a9a9e2;
+    --msg-probe:   #d2aae2;
   }
 
   * { box-sizing: border-box; }
@@ -294,12 +302,41 @@
   .logline .tag-web    { background: #2b2b3e; color: #8f9fd8; }
   .logline .tag-probe  { background: #322b3a; color: #c49bd8; }
 
-  .logline .tok-url  { color: var(--tok-url); text-decoration: underline dotted; }
-  .logline .tok-num  { color: var(--tok-num); }
-  .logline .tok-id   { color: var(--tok-id); }
-  .logline .tok-err  { color: var(--tok-err); font-weight: 600; }
-  .logline .tok-ok   { color: var(--tok-ok); }
-  .logline .tok-str  { color: var(--tok-str); }
+  /* 正文按消息类型着色：同一类日志颜色一致，扫一眼就能分辨是模型调用还是发送 */
+  .logline[data-tag="recv"]   .txt { color: var(--msg-recv); }
+  .logline[data-tag="route"]  .txt { color: var(--msg-route); }
+  .logline[data-tag="media"]  .txt { color: var(--msg-media); }
+  .logline[data-tag="prompt"] .txt { color: var(--msg-prompt); }
+  .logline[data-tag="model"]  .txt { color: var(--msg-model); }
+  .logline[data-tag="tool"]   .txt { color: var(--msg-tool); }
+  .logline[data-tag="reply"]  .txt { color: var(--msg-reply); }
+  .logline[data-tag="send"]   .txt { color: var(--msg-send); }
+  .logline[data-tag="limit"]  .txt { color: var(--msg-limit); }
+  .logline[data-tag="task"]   .txt { color: var(--msg-task); }
+  .logline[data-tag="cfg"]    .txt { color: var(--msg-cfg); }
+  .logline[data-tag="web"]    .txt { color: var(--msg-web); }
+  .logline[data-tag="probe"]  .txt { color: var(--msg-probe); }
+  /* 正文块边框跟着类型走，展开后仍然认得出是哪类日志 */
+  .logline[data-tag="recv"]   .body-text { border-left-color: var(--msg-recv); }
+  .logline[data-tag="route"]  .body-text { border-left-color: var(--msg-route); }
+  .logline[data-tag="media"]  .body-text { border-left-color: var(--msg-media); }
+  .logline[data-tag="prompt"] .body-text { border-left-color: var(--msg-prompt); }
+  .logline[data-tag="model"]  .body-text { border-left-color: var(--msg-model); }
+  .logline[data-tag="tool"]   .body-text { border-left-color: var(--msg-tool); }
+  .logline[data-tag="reply"]  .body-text { border-left-color: var(--msg-reply); }
+  .logline[data-tag="send"]   .body-text { border-left-color: var(--msg-send); }
+  .logline[data-tag="limit"]  .body-text { border-left-color: var(--msg-limit); }
+  .logline[data-tag="task"]   .body-text { border-left-color: var(--msg-task); }
+  .logline[data-tag="cfg"]    .body-text { border-left-color: var(--msg-cfg); }
+  .logline[data-tag="web"]    .body-text { border-left-color: var(--msg-web); }
+  .logline[data-tag="probe"]  .body-text { border-left-color: var(--msg-probe); }
+  /* 级别优先于类型：警告以上整条按级别上色，避免错误被类型色冲淡 */
+  .logline.lv-WARNING  .txt { color: #e6cfa8; }
+  .logline.lv-ERROR    .txt { color: #f0b8bd; }
+  .logline.lv-CRITICAL .txt { color: #e3bdee; }
+  .logline.lv-WARNING  .body-text { border-left-color: var(--lv-warning); }
+  .logline.lv-ERROR    .body-text { border-left-color: var(--lv-error); }
+  .logline.lv-CRITICAL .body-text { border-left-color: var(--lv-critical); }
   .logline.trace-only-hidden { display: none; }
 
   /* 日志里的整段正文：默认折叠，点开再看原文 */
@@ -630,34 +667,12 @@ const LOG_LINE_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.]\d{3})\s+(DEBUG
 const TRACE_TAG_RE = /^\[([a-z]+)\]\s?/;
 /* 早期版本把正文 JSON 转义塞在行尾，这里继续兼容，避免历史日志显示成乱码 */
 const LOG_BODY_RE = / \{\{BODY:([\s\S]*)\}\}$/;
-const LOG_TOKEN_RE = /(https?:\/\/[^\s]+)|(\d{5,})|(\d+(?:\.\d+)?\s?s\b)|(\d+(?:\.\d+)?)|(失败|错误|异常|超时|无法|拒绝|未连接|成功)/g;
 
 function logSpan(cls, text) {
   const el = document.createElement("span");
   if (cls) el.className = cls;
   el.textContent = text;
   return el;
-}
-
-/* 正文里的 URL、号码、耗时、成败词分别上色，其余保持默认 */
-function logBodyTokens(text) {
-  const frag = document.createDocumentFragment();
-  let last = 0;
-  LOG_TOKEN_RE.lastIndex = 0;
-  let m;
-  while ((m = LOG_TOKEN_RE.exec(text)) !== null) {
-    if (m.index > last) frag.append(logSpan("", text.slice(last, m.index)));
-    let cls = "";
-    if (m[1]) cls = "tok-url";
-    else if (m[2]) cls = "tok-id";
-    else if (m[3]) cls = "tok-num";
-    else if (m[4]) cls = "tok-num";
-    else if (m[5]) cls = m[5] === "成功" ? "tok-ok" : "tok-err";
-    frag.append(logSpan(cls, m[0]));
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) frag.append(logSpan("", text.slice(last)));
-  return frag;
 }
 
 /* 续行：不以时间戳开头的行属于上一条记录（多行正文、堆栈等），折叠显示 */
@@ -678,7 +693,7 @@ function attachLogBody(parent, lines) {
   const box = document.createElement("span");
   box.className = "body-text";
   box.hidden = true;
-  box.append(logBodyTokens(text));
+  box.textContent = text;
   btn.addEventListener("click", () => {
     box.hidden = !box.hidden;
     btn.textContent = box.hidden ? "展开正文 · " + count + " 行 / " + bytes + " 字" : "收起正文";
@@ -713,7 +728,7 @@ function renderLogHead(line) {
     body = body.slice(0, bm.index);
     try { legacyBody = JSON.parse(bm[1]); } catch (_) { legacyBody = null; }
   }
-  frag.append(logBodyTokens(body));
+  frag.append(logSpan("", body));
   return { frag, tag, legacyBody };
 }
 
@@ -760,6 +775,7 @@ function appendLogs(lines, dividerText) {
     const rendered = renderLogHead(line);
     txt.append(rendered.frag);
     if (rendered.legacyBody) attachLogBody(txt, rendered.legacyBody.split("\n"));
+    row.dataset.tag = rendered.tag || "other";
     if (rendered.tag) {
       row.dataset.trace = "1";
       if (state.logs.traceOnly) row.classList.add("trace-only-hidden");

@@ -4,6 +4,8 @@
 
 ## 硬性规则
 
+0. **改完先别提交、别推送**。改完代码只做本地验证，把改动和验证结果讲清楚，
+   等确认要提交再做 `git commit` / `git push`。用户说"提交"或"推送"才执行。
 1. **提交与 PR 不得署名 Claude**。提交信息、PR 标题和正文都不要出现 `Co-Authored-By: Claude`、
    `Generated with Claude Code` 或任何 AI 署名/致谢行。只写"做了什么"。
 2. **不要提交个人数据**：真实 QQ 号、昵称、API key、token、个人绝对路径、私人聊天记录、
