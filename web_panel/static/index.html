@@ -28,6 +28,17 @@
     --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
     --r: 6px;
+
+    /* 日志着色：模块名、轨迹标签、字面量各一档 */
+    --tok-ts:      #5f5a72;
+    --tok-mod:     #8f88a8;
+    --tok-url:     #6cb6ff;
+    --tok-num:     #d8b26a;
+    --tok-id:      #63c8b8;
+    --tok-err:     #ff8b8b;
+    --tok-ok:      #8ed08a;
+    --tok-cost:    #d8b26a;
+    --tok-str:     #b8b0cc;
   }
 
   * { box-sizing: border-box; }
@@ -239,6 +250,58 @@
   .logline.lv-CRITICAL .txt  { color: #e3bdee; }
   .logline.divider .txt { color: var(--muted); font-style: italic; }
 
+  /* 结构化日志：时间戳 / 级别 / 模块 / 轨迹标签 / 字面量分别着色 */
+  .logline .txt { line-height: 1.75; }
+  .logline .ts {
+    display: inline-block; width: 96px; color: var(--tok-ts);
+    font-variant-numeric: tabular-nums;
+  }
+  .logline .mod {
+    display: inline-block; width: 116px; color: var(--tok-mod);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .logline .lvl {
+    display: inline-block; width: 68px; font-weight: 600;
+    color: var(--lv-info);
+  }
+  /* 警告与错误整行给一点底色，扫日志时更容易定位 */
+  .logline.lv-WARNING  { background: rgba(224, 164, 88, 0.05); }
+  .logline.lv-ERROR    { background: rgba(224, 108, 117, 0.07); }
+  .logline.lv-CRITICAL { background: rgba(198, 120, 221, 0.08); }
+  .logline.lv-DEBUG    { opacity: 0.72; }
+  .logline.lv-DEBUG .lvl    { color: var(--lv-debug); }
+  .logline.lv-WARNING .lvl  { color: var(--lv-warning); }
+  .logline.lv-ERROR .lvl    { color: var(--lv-error); }
+  .logline.lv-CRITICAL .lvl { color: var(--lv-critical); }
+
+  .logline .tag {
+    display: inline-block; min-width: 52px; margin-right: 2px;
+    padding: 0 6px; border-radius: 4px; font-size: 11.5px;
+    background: #2a2836; color: #b9b2cc;
+  }
+  .logline .tag-recv   { background: #23303d; color: #7fb3d5; }
+  .logline .tag-route  { background: #2d2a3d; color: #a99bd8; }
+  .logline .tag-media  { background: #23343a; color: #63c8b8; }
+  .logline .tag-prompt { background: #33302a; color: #d8b26a; }
+  .logline .tag-model  { background: #2e2a3f; color: #b48ee8; }
+  .logline .tag-tool   { background: #23303a; color: #6cb6ff; }
+  .logline .tag-reply  { background: #26382c; color: #8ed08a; }
+  .logline .tag-send   { background: #223a33; color: #5fd0a0; }
+  .logline .tag-limit  { background: #3a2b25; color: #e0a458; }
+  .logline .tag-task   { background: #2b3040; color: #8fa8d8; }
+  .logline .tag-cfg    { background: #2b2b36; color: #9c95b5; }
+  .logline .tag-web    { background: #2b2b3e; color: #8f9fd8; }
+  .logline .tag-probe  { background: #322b3a; color: #c49bd8; }
+
+  .logline .tok-url  { color: var(--tok-url); text-decoration: underline dotted; }
+  .logline .tok-num  { color: var(--tok-num); }
+  .logline .tok-id   { color: var(--tok-id); }
+  .logline .tok-err  { color: var(--tok-err); font-weight: 600; }
+  .logline .tok-ok   { color: var(--tok-ok); }
+  .logline .tok-str  { color: var(--tok-str); }
+  .logline.trace-only-hidden { display: none; }
+
   /* ── 聊天 ─────────────────────────────────────────── */
   .chatlog { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; }
   .bubble { max-width: 78%; padding: 8px 12px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -310,6 +373,7 @@
         <option value="CRITICAL">CRITICAL</option>
       </select>
       <input id="logQuery" class="grow" placeholder="按关键字过滤">
+      <button class="btn" id="logTraceOnly" title="只显示带轨迹标签的日志（recv/model/send 等）">只看轨迹</button>
       <button class="btn primary" id="logFollow">暂停跟随</button>
       <button class="btn" id="logRefresh">重新加载</button>
       <span class="meta" id="logMeta"></span>
@@ -398,7 +462,7 @@ const state = {
   tab: "logs",
   scope: "",
   authFailed: false,
-  logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "" },
+  logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "", traceOnly: false },
   settings: { entries: [], dirty: new Set() },
 };
 
@@ -543,6 +607,65 @@ function lineLevel(line, fallback) {
   return fallback;
 }
 
+/* 结构化日志：时间戳 级别 模块 [标签] 正文 */
+const LOG_LINE_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.]\d{3})\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\S+)\s?([\s\S]*)$/;
+const TRACE_TAG_RE = /^\[([a-z]+)\]\s?/;
+const LOG_TOKEN_RE = /(https?:\/\/[^\s]+)|(\d{5,})|(\d+(?:\.\d+)?\s?s\b)|(\d+(?:\.\d+)?)|(失败|错误|异常|超时|无法|拒绝|未连接|成功)/g;
+
+function logSpan(cls, text) {
+  const el = document.createElement("span");
+  if (cls) el.className = cls;
+  el.textContent = text;
+  return el;
+}
+
+/* 正文里的 URL、号码、耗时、成败词分别上色，其余保持默认 */
+function logBodyTokens(text) {
+  const frag = document.createDocumentFragment();
+  let last = 0;
+  LOG_TOKEN_RE.lastIndex = 0;
+  let m;
+  while ((m = LOG_TOKEN_RE.exec(text)) !== null) {
+    if (m.index > last) frag.append(logSpan("", text.slice(last, m.index)));
+    let cls = "";
+    if (m[1]) cls = "tok-url";
+    else if (m[2]) cls = "tok-id";
+    else if (m[3]) cls = "tok-num";
+    else if (m[4]) cls = "tok-num";
+    else if (m[5]) cls = m[5] === "成功" ? "tok-ok" : "tok-err";
+    frag.append(logSpan(cls, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) frag.append(logSpan("", text.slice(last)));
+  return frag;
+}
+
+function renderLogLine(line) {
+  const frag = document.createDocumentFragment();
+  const m = line.match(LOG_LINE_RE);
+  if (!m) {
+    /* 缩进的堆栈续行：原样输出，交给级别色处理 */
+    frag.append(logSpan("", line));
+    return { frag, tag: "" };
+  }
+  const [, ts, lvl, mod, rest] = m;
+  frag.append(logSpan("ts", ts.slice(11) + " "));
+  frag.append(logSpan("lvl", lvl));
+  frag.append(logSpan("", " "));
+  frag.append(logSpan("mod", mod));
+  frag.append(logSpan("", " "));
+  let body = rest;
+  let tag = "";
+  const t = body.match(TRACE_TAG_RE);
+  if (t) {
+    tag = t[1];
+    frag.append(logSpan("tag tag-" + tag, tag));
+    body = body.slice(t[0].length);
+  }
+  frag.append(logBodyTokens(body));
+  return { frag, tag };
+}
+
 function appendLogs(lines, dividerText) {
   const view = $("logView");
   const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 8;
@@ -568,7 +691,12 @@ function appendLogs(lines, dividerText) {
     tick.className = "tick";
     const txt = document.createElement("span");
     txt.className = "txt";
-    txt.textContent = line;
+    const rendered = renderLogLine(line);
+    txt.append(rendered.frag);
+    if (rendered.tag) {
+      row.dataset.trace = "1";
+      if (state.logs.traceOnly) row.classList.add("trace-only-hidden");
+    }
     row.append(tick, txt);
     view.append(row);
   }
@@ -1266,6 +1394,18 @@ $("logFollow").addEventListener("click", () => {
   else stopLogPolling();
 });
 $("logRefresh").addEventListener("click", () => loadLogs(true));
+$("logTraceOnly").addEventListener("click", () => {
+  state.logs.traceOnly = !state.logs.traceOnly;
+  const btn = $("logTraceOnly");
+  btn.classList.toggle("primary", state.logs.traceOnly);
+  btn.textContent = state.logs.traceOnly ? "看全部" : "只看轨迹";
+  for (const row of document.querySelectorAll(".logline")) {
+    row.classList.toggle(
+      "trace-only-hidden",
+      state.logs.traceOnly && row.dataset.trace !== "1" && !row.classList.contains("divider")
+    );
+  }
+});
 
 $("reminderAdd").addEventListener("click", addReminder);
 $("reminderText").addEventListener("keydown", (e) => { if (e.key === "Enter") addReminder(); });

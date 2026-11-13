@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from agno.memory import MemoryManager
 from agno.models.openai import OpenAIChat
 
 from message_utils import persona_system_prompt
+from trace_log import trace as _trace
 from vision_client import BROWSER_UA
 
 # 所有外联都按“直连优先”设计。部分 HTTP 客户端会读取系统代理，
@@ -586,13 +588,18 @@ class AgentClient:
         images = [Image(filepath=str(p)) for p in (image_paths or [])]
         # 每个会话一个稳定的 x-opencode-session：同一 thread 的多次请求用同一 ID
         agent.model.extra_headers = self._session_headers(session_id)
-        logging.info(
-            "模型调用：model=%s timeout=%.0fs thread=%s 场景=%s 工具=%s",
+        started_at = time.monotonic()
+        _trace(
+            "model",
+            "开始调用 model=%s 流式=%s timeout=%.0fs thread=%s 场景=%s 工具=%s 提示词=%d字 图片=%d",
             model_name,
+            "是" if self._force_stream else "否",
             effective_timeout,
             session_id,
             "群聊" if group else "私聊",
             "完整" if full_access else "受限",
+            len(prompt or ""),
+            len(image_paths or []),
         )
         try:
             if self._force_stream:
@@ -625,6 +632,13 @@ class AgentClient:
         except Exception:
             content = str(run_output.content or "")
         content = (content or "").strip()
+        _trace(
+            "model",
+            "调用结束 耗时 %.1fs 输出 %d 字 thread=%s",
+            time.monotonic() - started_at,
+            len(content),
+            session_id,
+        )
         if not content:
             raise AgentError("模型没有返回结果", thread_id=session_id)
         new_session_id = str(run_output.session_id or session_id)

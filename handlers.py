@@ -30,6 +30,7 @@ from message_utils import (
 from pdf_utils import extract_pdf_text
 from reply_sender import send_reply
 from timetable import format_preview, load_timetable, parse_csv, parse_xlsx, save_timetable
+from trace_log import trace as _trace
 from video_utils import (
     build_videoshot_from_frames,
     build_videoshot_index,
@@ -305,14 +306,14 @@ async def _collect_images(
     image_paths: list[str] = []
     descriptions: list[str] = []
     for image in buf.images:
-        logging.info("收到图片：%s", image["url"])
+        _trace("media", "收到图片：%s", image["url"])
         try:
             path = await download_incoming_image(bridge, image)
         except Exception as exc:
-            logging.warning("图片下载失败：%s", exc)
+            _trace("media", "图片下载失败：%s", exc, level=logging.WARNING)
             descriptions.append(f"（图片下载失败：{exc}）")
             continue
-        logging.info("图片下载完成：%s", path)
+        _trace("media", "图片下载完成：%s", path)
         if native_vision:
             image_paths.append(path)
             logging.info("原生多模态：图片直接附加给 Codex：%s", path)
@@ -464,6 +465,16 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             "这是群友的普通发言，不是专门问你。你可以根据上下文自然接梗、补充或轻松互动；"
             "如果没有自然切入点，按后文约定输出 [不插话]。不要假装对方在向你提问，也不要把回复写成公告。\n"
         )
+    _trace(
+        "prompt",
+        "群 %s 组装提示词：%d 字（图片 %d，视频 %d，文件 %d，表情 %d）",
+        buf.group_id,
+        len(prompt),
+        len(image_paths),
+        len(video_infos),
+        len(file_infos),
+        len(sticker_infos),
+    )
     prompt += (
         "\n\n【群聊场景】这是 QQ 群里的对话，不是私聊。"
         f"当前群号 {buf.group_id}，上面每条消息前都标了发言人。"
@@ -520,7 +531,7 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             try:
                 state_db.touch_group_member(buf.group_id, buf.sender_id, buf.sender_name)
             except Exception:
-                logging.warning("记录群成员失败：%s", buf.sender_id, exc_info=True)
+                _trace("media", "记录群成员失败：%s", buf.sender_id, level=logging.WARNING)
 
     thread_id = bridge.store.get_persona_thread(context_key)
     try:
@@ -535,16 +546,17 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             persona=True,
         )
     except AgentError as exc:
-        logging.error("群聊模型调用失败：%s", exc)
+        _trace("model", "群聊模型调用失败：%s", exc, level=logging.ERROR)
         if getattr(buf, "triggered_by_mention", True):
             await bridge._send_private(session_key, "……刚才没接上，再说一次？")
         return
 
     if new_thread_id:
         bridge.store.set_persona_thread(context_key, new_thread_id)
+    _trace("reply", "群 %s 模型输出 %d 字", buf.group_id, len(reply or ""))
     reply = sanitize_persona_reply(reply, bridge.cfg)
     if not getattr(buf, "triggered_by_mention", True) and reply.strip() == "[不插话]":
-        logging.info("奶蛙判断当前群聊没有自然插话点：%s", session_key)
+        _trace("reply", "判断当前群聊没有自然插话点：%s", session_key)
         return
     if bridge.cfg.get("group_reply_at", False) and buf.sender_id:
         # @ 必须在文本之前单独发一段，文本里没法表达 at 段

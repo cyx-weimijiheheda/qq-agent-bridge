@@ -32,6 +32,7 @@ from sessions import SessionStore
 from state_db import StateDB
 from targets import group_key, parse_key, to_id
 from task_manager import TaskManager
+from trace_log import trace as _trace
 from tts_client import LocalGPTSoVITSClient
 from vision_client import build_vision_prompt, describe_image, vision_settings
 from voice_sender import VoiceSender
@@ -300,7 +301,7 @@ class Bridge:
             return None
         whitelist = self.cfg.get("group_whitelist") or []
         if whitelist and info.get("group_id") not in whitelist:
-            logging.info("忽略未启用群聊的群：%s", info.get("group_id"))
+            _trace("limit", "忽略未启用群聊的群：%s", info.get("group_id"))
             return None
         return info
 
@@ -313,6 +314,14 @@ class Bridge:
         if self.self_id and str(info.get("user_id") or "") == self.self_id:
             return
         message_id = str(info.get("message_id") or f"local-{time.time_ns()}")
+        _trace(
+            "recv",
+            "群 %s 收到 %s(%s)：%s",
+            info.get("group_id"),
+            info.get("sender_name") or "",
+            info.get("user_id"),
+            (info.get("text") or "")[:160],
+        )
         info["message_id"] = message_id
         if is_duplicate(message_id, self.seen_ids):
             return
@@ -396,11 +405,18 @@ class Bridge:
 
     async def _handle_private_event(self, info: dict[str, Any]) -> None:
         if info["user_id"] not in self.cfg["full_access_qq"]:
-            logging.info("忽略非白名单 QQ：%s", info["user_id"])
+            _trace("limit", "忽略非白名单 QQ：%s", info["user_id"])
             return
         if is_duplicate(info["message_id"], self.seen_ids):
+            _trace("limit", "重复消息已忽略：%s", info.get("message_id"))
             return
         user_id = info["user_id"]
+        _trace(
+            "recv",
+            "私聊 %s 收到：%s",
+            user_id,
+            (info.get("text") or "")[:160],
+        )
         self.store.mark_activity(user_id)
         await asyncio.to_thread(bridge_io.log_feedback, self, user_id, info["text"])
         captured = await asyncio.to_thread(
@@ -841,7 +857,7 @@ class Bridge:
             await self.web_replies[target].put(text)
             return
         if self.ws is None:
-            logging.warning("WS 未连接，无法发送：%s", text[:80])
+            _trace("send", "WS 未连接，无法发送：%s", text[:80], level=logging.WARNING)
             return
         scene, raw_id = parse_key(target)
         if scene == "group":
@@ -855,7 +871,7 @@ class Bridge:
                 "params": {"user_id": to_id(raw_id), "message": text},
             }
         await self.ws.send(json.dumps(payload, ensure_ascii=False))
-        logging.info("已发送到 %s（%s）：%s", target, scene, text[:80])
+        _trace("send", "已发送到 %s（%s）%d 字：%s", target, scene, len(text), text[:120])
         self.store.mark_activity(target)
 
 
@@ -876,10 +892,14 @@ async def main() -> None:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
     logging.basicConfig(
         level=getattr(logging, str(cfg.get("log_level", "INFO")).upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(message)s",
+        # 带上模块名，网页端可以按来源（handlers / bridge / agent_client）着色；
+        # 轨迹标签 [tag] 由 trace() 写进正文，这里不参与。
+        format="%(asctime)s %(levelname)s %(module)s %(message)s",
         handlers=[file_handler, logging.StreamHandler()],
     )
-    logging.info("配置：%s", cfg.get("_config_path") or "（内置默认值）")
+    from trace_log import trace as _trace
+
+    _trace("cfg", "配置：%s", cfg.get("_config_path") or "（内置默认值）")
     legacy_keys = cfg.get("_legacy_keys") or []
     if legacy_keys:
         logging.warning(
