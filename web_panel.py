@@ -710,6 +710,60 @@ class WebPanel:
         root = getattr(self.bridge, "bridge_dir", None) or Path.cwd()
         return Path(root) / "data" / raw
 
+    def _log_backup_paths(self, path: Path) -> list[Path]:
+        """轮转备份文件（bridge.log.1、.2 …），按 log_backup_count 推断。"""
+        try:
+            count = int(self.bridge.cfg.get("log_backup_count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        return [Path(f"{path}.{index}") for index in range(1, max(count, 0) + 1)]
+
+    def _clear_log_files(self) -> dict[str, Any]:
+        """清空当前日志与轮转备份。
+
+        日志句柄还开在本进程里，直接删文件会让 handler 继续按旧偏移写，
+        结果是稀疏文件里一片空洞。所以先关句柄、删文件、再按原模式重新打开。
+        """
+        path = self._log_path()
+        backups = self._log_backup_paths(path)
+        handlers = [
+            handler
+            for handler in logging.getLogger().handlers
+            if isinstance(handler, logging.FileHandler)
+            and Path(handler.baseFilename).resolve() == path.resolve()
+        ]
+
+        for handler in handlers:
+            handler.acquire()
+            try:
+                if handler.stream is not None:
+                    handler.flush()
+                    handler.stream.close()
+                    handler.stream = None
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                handler.stream = handler._open()
+            finally:
+                handler.release()
+
+        if not handlers:
+            # 没有活动句柄时（测试、或日志未初始化）按普通文件清空
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8"):
+                pass
+
+        removed = 0
+        for backup in backups:
+            try:
+                backup.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+
+        return {"ok": True, "path": str(path), "backups_removed": removed}
+
     def _read_log(
         self,
         *,
@@ -1246,6 +1300,22 @@ class WebPanel:
                 query=str(q or ""),
                 client_file_id=str(file_id or ""),
             )
+
+        @app.post("/api/logs/clear", dependencies=[Depends(self._require_auth)])
+        async def api_logs_clear() -> dict[str, Any]:
+            try:
+                result = await asyncio.to_thread(self._clear_log_files)
+            except OSError as exc:
+                logging.warning("清空日志失败：%s", exc)
+                raise HTTPException(status_code=500, detail=f"清空日志失败：{exc}") from exc
+            return {
+                **result,
+                "message": (
+                    f"日志已清空，同时删除 {result['backups_removed']} 个轮转备份"
+                    if result["backups_removed"]
+                    else "日志已清空"
+                ),
+            }
 
         # ---- 配置 ----
 

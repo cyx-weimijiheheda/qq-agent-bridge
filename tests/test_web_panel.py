@@ -529,3 +529,48 @@ def test_loopback_still_accepts_correct_token(tmp_path):
     client = TestClient(panel.app, client=("127.0.0.1", 50000))
     headers = {"Authorization": "Bearer test-token"}
     assert client.get("/api/status", headers=headers).status_code == 200
+
+
+def test_logs_clear_truncates_file_and_backups(tmp_path):
+    """清除日志会清空正文，并删掉指定份数的轮转备份。"""
+    client, bridge, log_path = _log_client(tmp_path, "a\nb\n")
+    bridge.cfg["log_backup_count"] = 2
+    for index in (1, 2):
+        (tmp_path / f"{log_path.name}.{index}").write_text(f"backup{index}\n", encoding="utf-8")
+
+    data = client.post("/api/logs/clear", headers=authed(None)).json()
+    assert data["ok"] is True
+    assert data["backups_removed"] == 2
+    assert log_path.exists()
+    assert log_path.read_text(encoding="utf-8") == ""
+    assert not (tmp_path / f"{log_path.name}.1").exists()
+
+    after = client.get("/api/logs", headers=authed(None)).json()
+    assert after["lines"] == []
+    assert after["size"] == 0
+
+
+def test_logs_clear_requires_token(tmp_path):
+    client, _, _ = _log_client(tmp_path, "a\n")
+    assert client.post("/api/logs/clear").status_code == 401
+
+
+def test_logs_clear_keeps_writing_after_reopen(tmp_path, monkeypatch):
+    """有活动 FileHandler 时，清空后句柄要能继续写，不能留下空洞。"""
+    import logging as _logging
+
+    client, bridge, log_path = _log_client(tmp_path, "old\n")
+    handler = _logging.FileHandler(str(log_path), encoding="utf-8")
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    try:
+        client.post("/api/logs/clear", headers=authed(None))
+        assert log_path.read_text(encoding="utf-8") == ""
+        handler.emit(_logging.makeLogRecord({"msg": "after-clear"}))
+        handler.flush()
+        content = log_path.read_text(encoding="utf-8")
+        assert "after-clear" in content
+        assert not content.startswith("\x00")
+    finally:
+        root.removeHandler(handler)
+        handler.close()

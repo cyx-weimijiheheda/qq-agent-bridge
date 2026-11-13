@@ -431,6 +431,7 @@
       <button class="btn" id="logTraceOnly" title="只显示带轨迹标签的日志（recv/model/send 等）">只看轨迹</button>
       <button class="btn primary" id="logFollow">暂停跟随</button>
       <button class="btn" id="logRefresh">重新加载</button>
+      <button class="btn danger" id="logClear" title="清空日志文件及其轮转备份">清除日志</button>
       <span class="meta" id="logMeta"></span>
     </div>
     <div class="logview" id="logView"></div>
@@ -517,7 +518,7 @@ const state = {
   tab: "logs",
   scope: "",
   authFailed: false,
-  logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "", traceOnly: false },
+  logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "", traceOnly: false, seq: 0 },
   settings: { entries: [], dirty: new Set() },
 };
 
@@ -793,6 +794,9 @@ function appendLogs(lines, dividerText) {
 
 async function loadLogs(reset) {
   const logs = state.logs;
+  /* 切标签或连续点重载会并发发起请求，先回来的旧响应若照常追加就会重复；
+     用序号标记最新一次请求，过期的响应直接丢弃 */
+  const seq = ++logs.seq;
   if (reset) {
     logs.offset = 0;
     logs.fileId = "";
@@ -810,10 +814,12 @@ async function loadLogs(reset) {
   try {
     d = await api("/api/logs?" + params.toString());
   } catch (err) {
+    if (seq !== logs.seq) return;
     toast(err.message, "bad");
     stopLogPolling();
     return;
   }
+  if (seq !== logs.seq) return;
   let divider = null;
   if (d.rotated) {
     divider = "—— 日志已轮转，已重新加载 ——";
@@ -1479,6 +1485,16 @@ $("logFollow").addEventListener("click", () => {
   else stopLogPolling();
 });
 $("logRefresh").addEventListener("click", () => loadLogs(true));
+$("logClear").addEventListener("click", async () => {
+  if (!confirm("清空日志文件及其轮转备份？此操作不可撤销。")) return;
+  try {
+    const d = await api("/api/logs/clear", { method: "POST" });
+    toast(d.message || "日志已清空", "good");
+    state.logs.offset = 0;
+    state.logs.fileId = "";
+    loadLogs(true);
+  } catch (err) { toast(err.message, "bad"); }
+});
 $("logTraceOnly").addEventListener("click", () => {
   state.logs.traceOnly = !state.logs.traceOnly;
   const btn = $("logTraceOnly");
