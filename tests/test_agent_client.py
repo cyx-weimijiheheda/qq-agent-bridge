@@ -297,6 +297,7 @@ def test_normalize_chat_path_variants():
 def test_chat_path_rewrite_client_only_touches_chat_completions():
     """改写只命中 /chat/completions，其它路径原样透传。"""
     import httpx
+
     from agent_client import _PathRewriteClient
 
     client = _PathRewriteClient(chat_path="/completions")
@@ -308,6 +309,7 @@ def test_chat_path_rewrite_client_only_touches_chat_completions():
 def test_chat_path_rewrite_is_noop_on_default():
     """默认路径下不改写，避免影响标准 OpenAI 兼容服务。"""
     import httpx
+
     from agent_client import _PathRewriteClient
 
     client = _PathRewriteClient(chat_path="/chat/completions")
