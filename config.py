@@ -262,7 +262,10 @@ DEFAULTS: dict[str, Any] = {
     "voice_cache_dir": "voice_cache",
     # ---------- Web 工作台 ----------
     "web_enabled": False,
-    "web_host": "127.0.0.1",
+    # 0.0.0.0 = 监听所有网卡，同一网络的其他设备可直接访问；改成回环地址即可收回。
+    # 绑定 0.0.0.0 时请确认 web_token 足够强，且不要在本机加会改写来源 IP 的反向代理
+    # （代理转发会让 web_local_no_token 误判为回环访问）。
+    "web_host": "0.0.0.0",
     "web_port": 8080,
     "web_token": "",
     # 来自本机回环地址的请求免 token（远程访问仍需）。默认关闭，按需打开

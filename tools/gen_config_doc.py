@@ -390,7 +390,7 @@ DESCRIPTIONS: dict[str, str] = {
     "voice_fallback_to_text": "合成失败时是否直接把文本发出去",
     # Web 工作台
     "web_enabled": "是否开启 Web 工作台（需要 `pip install -r requirements-web.txt`）",
-    "web_host": "监听地址；`0.0.0.0` 监听所有网卡（局域网可访问），`127.0.0.1` 仅本机",
+    "web_host": "监听地址；默认 `0.0.0.0` 监听所有网卡（同网络可直接访问），改回 `127.0.0.1` 则仅本机",
     "web_port": "监听端口",
     "web_token": "访问口令；`web_enabled=true` 时必须设置一个非默认值",
     "web_local_no_token": "本机回环访问免填口令（远程访问仍需 token）。单用户桌面可打开，共享机器请保持关闭",

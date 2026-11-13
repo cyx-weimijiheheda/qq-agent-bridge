@@ -1352,7 +1352,7 @@ async def start_web_panel(bridge: Any) -> None:
     panel = WebPanel(bridge)
     config = uvicorn.Config(
         panel.app,
-        host=str(bridge.cfg.get("web_host", "127.0.0.1")),
+        host=str(bridge.cfg.get("web_host", "0.0.0.0")),
         port=int(bridge.cfg.get("web_port", 8080)),
         log_level="warning",
     )
