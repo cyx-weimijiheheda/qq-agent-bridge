@@ -149,30 +149,95 @@ def build_vision_payload(
     }
 
 
+def _sse_collect(raw: bytes) -> dict[str, Any]:
+    """把 SSE 流聚合成和普通响应同形的 dict。
+
+    只取 choices[0].delta.content；reasoning_content 一类中间字段丢弃。
+    有的网关会把心跳写成 `: heartbeat` 注释行，一并跳过。
+    """
+    text_parts: list[str] = []
+    for line in raw.decode("utf-8", "ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line or line == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                text_parts.append(str(piece))
+    content = "".join(text_parts).strip()
+    if not content:
+        raise ValueError("流式响应没有内容")
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def _needs_streaming(exc: Exception) -> bool:
+    """判断异常是不是「本接口只接受流式」那种拒绝。"""
+    body = ""
+    if hasattr(exc, "read"):
+        try:
+            body = exc.read().decode("utf-8", "ignore")  # type: ignore[attr-defined]
+        except Exception:
+            body = ""
+    message = f"{exc} {body}".lower()
+    return "streaming_required" in message or "streaming required" in message
+
+
 async def call_opencode_chat(
     api_url: str,
     payload: dict[str, Any],
     api_key: str,
     timeout: int = 150,
+    stream: bool | None = None,
 ) -> dict[str, Any]:
-    def _call() -> dict[str, Any]:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    """调用兼容接口，返回普通响应形状的 dict。
+
+    `stream=None`（默认）时先按非流式发；如果网关回的是
+    streaming_required，就自动改走流式再把分片拼起来。这样所有调用点
+    都不需要关心网关是不是强制流式。
+    """
+
+    def _headers(accept: str) -> dict[str, str]:
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "User-Agent": BROWSER_UA,
-            "Accept": "application/json",
+            "Accept": accept,
         }
         if "opencode" in api_url:
             # opencode-go 要求每个会话一个稳定的 x-opencode-session 头
             headers["x-opencode-session"] = OPENCODE_SESSION_HEADER
+        return headers
+
+    def _request(body: dict[str, Any], accept: str) -> bytes:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         req = urllib.request.Request(
             api_url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
+            data=json.dumps(body).encode("utf-8"),
+            headers=_headers(accept),
         )
         with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return resp.read()
+
+    def _call() -> dict[str, Any]:
+        if stream:
+            return _sse_collect(_request({**payload, "stream": True}, "text/event-stream"))
+        try:
+            raw = _request({**payload, "stream": False}, "application/json")
+            return json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            if not _needs_streaming(exc):
+                raise
+            # 网关只接受流式：重发一次流式请求
+            return _sse_collect(_request({**payload, "stream": True}, "text/event-stream"))
 
     return await asyncio.to_thread(_call)
 

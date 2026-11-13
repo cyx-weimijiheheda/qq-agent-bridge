@@ -245,3 +245,74 @@ def test_vision_settings_prefers_explicit_and_legacy_keys():
     assert settings.max_tokens == 1234
     assert vision_settings({"model": "main", "mimo_vision_model": "legacy-vision"}).model == "legacy-vision"
     assert vision_settings({}).model
+
+
+def test_sse_collect_aggregates_deltas():
+    """SSE 分片按顺序拼成一条完整内容，心跳与 [DONE] 被跳过。"""
+    from vision_client import _sse_collect
+
+    raw = (
+        ": heartbeat\n\n"
+        'data: {"choices":[{"delta":{"reasoning_content":"思考中"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"红"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"蓝"}}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode()
+    data = _sse_collect(raw)
+    assert data["choices"][0]["message"]["content"] == "红蓝"
+
+
+def test_needs_streaming_detects_error_body():
+    """能从错误体里认出 streaming_required。"""
+    from vision_client import _needs_streaming
+
+    class FakeHTTPError(Exception):
+        def read(self):
+            return b'{"error": {"code": "streaming_required"}}'
+
+    assert _needs_streaming(FakeHTTPError()) is True
+    assert _needs_streaming(ValueError("boom")) is False
+
+
+def test_call_opencode_chat_falls_back_to_stream(monkeypatch):
+    """非流式被拒（streaming_required）时自动改走流式。"""
+    import urllib.request
+
+    from vision_client import call_opencode_chat
+
+    calls = []
+
+    class FakeResp:
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeOpener:
+        def open(self, req, timeout=None):
+            payload = json.loads(req.data.decode("utf-8"))
+            calls.append(payload.get("stream"))
+            if not payload.get("stream"):
+                class E(Exception):
+                    def read(self_inner):
+                        return b'{"error": {"code": "streaming_required"}}'
+                raise E("HTTP Error 400")
+            body = (
+                'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ).encode()
+            return FakeResp(body)
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: FakeOpener())
+    data = asyncio.run(
+        call_opencode_chat("https://gw.example/v1/chat/completions", {"model": "m"}, "k", timeout=10)
+    )
+    assert data["choices"][0]["message"]["content"] == "好"
+    assert calls == [False, True]
