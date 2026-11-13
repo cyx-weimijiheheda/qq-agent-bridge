@@ -315,8 +315,8 @@
     border-radius: 4px; color: #d6d2e2; white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
-  /* display:block 会盖掉浏览器给 [hidden] 的默认 display:none，必须显式补回来，
-     否则正文块始终可见、展开按钮点了也没有反应 */
+  /* display:block 会盖掉浏览器给 [hidden] 的 display:none，必须显式补回，
+     否则正文块始终可见、展开按钮点了没有反应 */
   .logline .body-text[hidden] { display: none; }
   .logline .body-inline { color: var(--tok-str); }
 
@@ -628,6 +628,8 @@ function lineLevel(line, fallback) {
 /* 结构化日志：时间戳 级别 模块 [标签] 正文 */
 const LOG_LINE_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[,.]\d{3})\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\S+)\s?([\s\S]*)$/;
 const TRACE_TAG_RE = /^\[([a-z]+)\]\s?/;
+/* 早期版本把正文 JSON 转义塞在行尾，这里继续兼容，避免历史日志显示成乱码 */
+const LOG_BODY_RE = / \{\{BODY:([\s\S]*)\}\}$/;
 const LOG_TOKEN_RE = /(https?:\/\/[^\s]+)|(\d{5,})|(\d+(?:\.\d+)?\s?s\b)|(\d+(?:\.\d+)?)|(失败|错误|异常|超时|无法|拒绝|未连接|成功)/g;
 
 function logSpan(cls, text) {
@@ -658,53 +660,38 @@ function logBodyTokens(text) {
   return frag;
 }
 
-/* 行尾的 {{BODY:"..."}} 是完整正文（JSON 转义），拆出来单独渲染 */
-const LOG_BODY_RE = / \{\{BODY:([\s\S]*)\}\}$/;
-
-function splitLogBody(text) {
-  const m = text.match(LOG_BODY_RE);
-  if (!m) return { visible: text, body: null };
-  const visible = text.slice(0, m.index);
-  try {
-    return { visible, body: JSON.parse(m[1]) };
-  } catch (_) {
-    return { visible, body: null };
-  }
-}
-
-/* 单行短正文直接附在行尾；多行或过长的给一个展开按钮 */
-function appendLogBody(parent, body) {
-  if (body === null || body === undefined || body === "") return;
-  const text = String(body).replace(/\n+$/, "");
-  const lines = text.split("\n").length;
-  if (lines === 1 && text.length <= 120) {
-    const inline = logSpan("body-inline", "「" + text + "」");
-    parent.append(inline);
+/* 续行：不以时间戳开头的行属于上一条记录（多行正文、堆栈等），折叠显示 */
+function attachLogBody(parent, lines) {
+  if (!lines.length) return;
+  const text = lines.join("\n").replace(/\n+$/, "");
+  if (!text) return;
+  const count = text.split("\n").length;
+  const bytes = text.length;
+  if (count === 1 && bytes <= 120) {
+    /* 单行短正文直接内联，不占按钮 */
+    parent.append(logSpan("body-inline", "「" + text + "」"));
     return;
   }
-  const preview = lines > 1 ? lines + " 行 / " + text.length + " 字" : text.length + " 字";
   const btn = document.createElement("button");
   btn.className = "body-toggle";
-  btn.textContent = "展开正文 · " + preview;
+  btn.textContent = "展开正文 · " + count + " 行 / " + bytes + " 字";
   const box = document.createElement("span");
   box.className = "body-text";
   box.hidden = true;
   box.append(logBodyTokens(text));
   btn.addEventListener("click", () => {
     box.hidden = !box.hidden;
-    btn.textContent = box.hidden ? "展开正文 · " + preview : "收起正文";
+    btn.textContent = box.hidden ? "展开正文 · " + count + " 行 / " + bytes + " 字" : "收起正文";
   });
   parent.append(btn, box);
 }
 
-function renderLogLine(line) {
+function renderLogHead(line) {
   const frag = document.createDocumentFragment();
   const m = line.match(LOG_LINE_RE);
   if (!m) {
-    /* 缩进的堆栈续行：原样输出，交给级别色处理 */
-    const split = splitLogBody(line);
-    frag.append(logSpan("", split.visible));
-    return { frag, tag: "", body: split.body };
+    frag.append(logSpan("", line));
+    return { frag, tag: "" };
   }
   const [, ts, lvl, mod, rest] = m;
   frag.append(logSpan("ts", ts.slice(11) + " "));
@@ -720,9 +707,14 @@ function renderLogLine(line) {
     frag.append(logSpan("tag tag-" + tag, tag));
     body = body.slice(t[0].length);
   }
-  const split = splitLogBody(body);
-  frag.append(logBodyTokens(split.visible));
-  return { frag, tag, body: split.body };
+  let legacyBody = null;
+  const bm = body.match(LOG_BODY_RE);
+  if (bm) {
+    body = body.slice(0, bm.index);
+    try { legacyBody = JSON.parse(bm[1]); } catch (_) { legacyBody = null; }
+  }
+  frag.append(logBodyTokens(body));
+  return { frag, tag, legacyBody };
 }
 
 function appendLogs(lines, dividerText) {
@@ -742,7 +734,22 @@ function appendLogs(lines, dividerText) {
   }
 
   let last = "INFO";
+  let pendingTxt = null;
+  let pendingLines = [];
+
+  const flush = () => {
+    if (pendingTxt && pendingLines.length) attachLogBody(pendingTxt, pendingLines);
+    pendingTxt = null;
+    pendingLines = [];
+  };
+
   for (const line of lines) {
+    if (!LOG_LINE_RE.test(line)) {
+      /* 续行挂到上一条记录；没有上一条就当成孤立行丢弃（截断窗口的断头） */
+      if (pendingTxt) pendingLines.push(line);
+      continue;
+    }
+    flush();
     last = lineLevel(line, last);
     const row = document.createElement("div");
     row.className = "logline lv-" + last;
@@ -750,16 +757,18 @@ function appendLogs(lines, dividerText) {
     tick.className = "tick";
     const txt = document.createElement("span");
     txt.className = "txt";
-    const rendered = renderLogLine(line);
+    const rendered = renderLogHead(line);
     txt.append(rendered.frag);
-    appendLogBody(txt, rendered.body);
+    if (rendered.legacyBody) attachLogBody(txt, rendered.legacyBody.split("\n"));
     if (rendered.tag) {
       row.dataset.trace = "1";
       if (state.logs.traceOnly) row.classList.add("trace-only-hidden");
     }
     row.append(tick, txt);
     view.append(row);
+    pendingTxt = txt;
   }
+  flush();
 
   while (view.childElementCount > MAX_LOG_NODES) view.removeChild(view.firstElementChild);
   // 只在原本就贴着底部时才自动滚屏，用户上翻查看历史时不打断
