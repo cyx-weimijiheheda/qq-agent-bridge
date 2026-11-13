@@ -33,33 +33,34 @@ def test_trace_tags_are_documented():
         assert tag in TRACE_TAGS
 
 
-def test_trace_body_becomes_multiline(caplog):
-    """body 作为后续多行原样写入，首行仍在记录开头。"""
+def test_encode_body_keeps_line_intact(caplog):
+    """多行正文编码后不产生真实换行，日志仍然一行一条。"""
+    import json as _json
+
+    from trace_log import encode_body
+
+    body = "第一行\n第二行\n\n第四行"
+    encoded = encode_body(body)
+    assert "\n" not in encoded
+    assert encoded.startswith(" {{BODY:")
+    raw = encoded[len(" {{BODY:") : -2]
+    assert _json.loads(raw) == body
+
+
+def test_trace_with_body_appends_marker(caplog):
+    """trace(..., body=) 把正文挂在行尾，正文里的换行被转义。"""
+    import json as _json
+
     with caplog.at_level(logging.INFO):
-        trace("send", "已发送 %d 字", 5, body="第一行\n第二行")
-    lines = caplog.text.strip().splitlines()
-    assert lines[-3].endswith("[send] 已发送 5 字")
-    assert lines[-2] == "第一行"
-    assert lines[-1] == "第二行"
+        trace("send", "已发送 %d 字", 5, body="a\nb")
+    line = caplog.text.strip().splitlines()[-1]
+    assert "[send] 已发送 5 字 {{BODY:" in line
+    assert "\n" not in line
+    payload = _json.loads(line[line.index("{{BODY:") + len("{{BODY:") : -2])
+    assert payload == "a\nb"
 
 
-def test_trace_body_keeps_real_newlines(caplog):
-    """多行正文在日志里是真实换行，而不是转义字符。"""
-    with caplog.at_level(logging.INFO):
-        trace("reply", "模型输出", body="a\nb\nc")
-    text = caplog.text
-    assert "\\n" not in text          # 没有字面反斜杠 n
-    assert text.rstrip().endswith("a\nb\nc")
-
-
-def test_trace_body_strips_trailing_newline(caplog):
-    """正文末尾多余空行不写进日志。"""
-    with caplog.at_level(logging.INFO):
-        trace("reply", "输出", body="内容\n\n")
-    assert caplog.text.rstrip().endswith("内容")
-
-
-def test_trace_without_body_stays_single_line(caplog):
+def test_trace_without_body_has_no_marker(caplog):
     with caplog.at_level(logging.INFO):
         trace("recv", "收到")
-    assert len(caplog.text.strip().splitlines()) == 1
+    assert "{{BODY:" not in caplog.text

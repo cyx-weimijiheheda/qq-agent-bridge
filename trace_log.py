@@ -19,18 +19,11 @@
 
 使用 `trace()` 而不是裸 `logging.info()`，是为了让网页能把同一条消息的
 链路自动归组；不带标签的老日志仍然正常显示，只是没有 tag 着色。
-
-传了 `body` 时，正文会作为**后续多行**原样写进日志文件，保持可读：
-
-    2026-11-13 23:07:04,505 INFO handlers [reply] 群 1 模型输出 57 字
-    嘎嘎滴辣虾！
-    技术问题升级成池塘玄学了。
-
-网页端把「不以时间戳开头」的行视为上一条记录的续行，折叠显示，可展开。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 
 TRACE_TAGS = (
@@ -49,6 +42,15 @@ TRACE_TAGS = (
     "probe",
 )
 
+# 正文载荷标记：` {{BODY:"..."}}`，内容是 JSON 字符串（换行已转义成 \n）。
+# 放在行尾是为了不破坏「一行一条日志」的结构，网页端解析后可以展开成多行。
+BODY_MARKER = " {{BODY:%s}}"
+
+
+def encode_body(text: str) -> str:
+    """把多行正文编码成能塞进单行日志的形式。"""
+    return BODY_MARKER % json.dumps(str(text or ""), ensure_ascii=False)
+
 
 def trace(
     tag: str,
@@ -63,10 +65,10 @@ def trace(
     `*args` 与 logging 的 %-格式化一致，不要在 message 里预先拼字符串，
     这样未命中任何处理器的场景下也不会白白格式化。
 
-    `body` 给整段正文（例如完整回复）：会作为后续多行紧跟在首行之后，
-    保持原文换行，便于直接在日志文件里阅读。
+    `body` 给整段正文（例如完整回复）：会被 JSON 转义后附在行尾，
+    日志仍然是一行一条，网页面板可以点开查看原文。
     """
-    text = f"[{tag}] " + (message % args if args else message)
-    if body is not None and str(body) != "":
-        text += "\n" + str(body).rstrip("\n")
-    logging.getLogger().log(level, text, stacklevel=2)
+    suffix = encode_body(body) if body is not None else ""
+    logging.getLogger().log(
+        level, "[%s] " + message + suffix, tag, *args, stacklevel=2
+    )
