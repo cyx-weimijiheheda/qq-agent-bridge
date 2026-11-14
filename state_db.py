@@ -180,6 +180,15 @@ class StateDB:
             params += (user_id,)
         return self._changed(sql, params) > 0
 
+    def delete_reminder(self, reminder_id: int, user_id: str | None = None) -> bool:
+        """物理删除提醒（区别于 cancel 只改状态）。"""
+        sql = "DELETE FROM reminders WHERE id = ?"
+        params: tuple[Any, ...] = (reminder_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
+
     def mark_reminder_done(self, reminder_id: int, user_id: str | None = None) -> bool:
         sql = "UPDATE reminders SET status = 'done' WHERE id = ?"
         params: tuple[Any, ...] = (reminder_id,)
@@ -298,6 +307,15 @@ class StateDB:
                 (user_id,),
             )
         return self._query("SELECT * FROM tasks ORDER BY id DESC")
+
+    def delete_task(self, task_id: int, user_id: str | None = None) -> bool:
+        """物理删除任务记录。运行中的任务要先取消，避免 worker 继续写回。"""
+        sql = "DELETE FROM tasks WHERE id = ?"
+        params: tuple[Any, ...] = (task_id,)
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params += (user_id,)
+        return self._changed(sql, params) > 0
 
     def distinct_user_ids(self) -> list[str]:
         """三张按用户归属的表里出现过的全部 user_id，供作用域切换器枚举。"""

@@ -21,6 +21,33 @@ class TaskManager:
     def list_tasks(self, user_id: str | None = None) -> list[dict[str, Any]]:
         return self.db.list_tasks(user_id)
 
+    def get_task(self, task_id: int, user_id: str | None = None) -> dict[str, Any] | None:
+        """按 id 取任务；传 user_id 时同时校验归属，避免跨作用域读到别人的任务。"""
+        task = self.db.get_task(task_id)
+        if task is None:
+            return None
+        if user_id is not None and str(task.get("user_id")) != str(user_id):
+            return None
+        return task
+
+    def delete_task(self, task_id: int, user_id: str | None = None) -> dict[str, Any]:
+        """物理删除任务记录；运行中的任务不允许删，否则 worker 会继续写回。"""
+        task = self.get_task(task_id, user_id=user_id)
+        if task is None:
+            return {"ok": False, "reason": "not_found", "id": task_id}
+        status = str(task.get("status") or "")
+        if status == "running":
+            return {
+                "ok": False,
+                "reason": "running_not_deletable",
+                "id": task_id,
+                "status": status,
+                "message": f"任务 #{task_id} 正在执行，请先取消再删除。",
+            }
+        if not self.db.delete_task(task_id, user_id=user_id):
+            return {"ok": False, "reason": "not_found", "id": task_id}
+        return {"ok": True, "reason": "deleted", "id": task_id, "status": status}
+
     def cancel_task(self, task_id: int, user_id: str | None = None) -> dict[str, Any]:
         """取消任务，返回能如实反映结果的详情。
 

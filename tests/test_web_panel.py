@@ -574,3 +574,47 @@ def test_logs_clear_keeps_writing_after_reopen(tmp_path, monkeypatch):
     finally:
         root.removeHandler(handler)
         handler.close()
+
+
+def test_reminder_delete_is_physical(tmp_path):
+    """删除提醒是真删行，不是改状态。"""
+    client, bridge, _ = _log_client(tmp_path)
+    rid = bridge.state_db.create_reminder("10001", "喝水", "2030-01-01T09:00:00")
+    r = client.post(
+        "/api/reminders/delete", headers=authed(None), json={"id": rid, "scope": "10001"}
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert bridge.state_db.get_reminder(rid) is None
+
+
+def test_reminder_delete_respects_scope(tmp_path):
+    """别的作用域删不掉这条提醒。"""
+    client, bridge, _ = _log_client(tmp_path)
+    rid = bridge.state_db.create_reminder("10001", "喝水", "2030-01-01T09:00:00")
+    r = client.post(
+        "/api/reminders/delete", headers=authed(None), json={"id": rid, "scope": "99999"}
+    )
+    # 作用域不在允许列表里会被挡在更外层（403），总之不能删到别人数据
+    assert r.status_code in (403, 404)
+    assert bridge.state_db.get_reminder(rid) is not None
+
+
+def test_task_delete_and_detail(tmp_path):
+    """任务能查详情、能物理删除；运行中的任务拒绝删除。"""
+    client, bridge, _ = _log_client(tmp_path)
+    tid = bridge.state_db.add_task("10001", "task", "写点东西", "done")
+    detail = client.get(
+        "/api/tasks/detail", headers=authed(None), params={"id": tid, "scope": "10001"}
+    ).json()
+    assert detail["task"]["id"] == tid
+    assert detail["task"]["prompt"] == "写点东西"
+
+    r = client.post("/api/tasks/delete", headers=authed(None), json={"id": tid, "scope": "10001"})
+    assert r.status_code == 200
+    assert bridge.state_db.get_task(tid) is None
+
+    rid = bridge.state_db.add_task("10001", "task", "跑着", "running")
+    r = client.post("/api/tasks/delete", headers=authed(None), json={"id": rid, "scope": "10001"})
+    assert r.status_code == 409
+    assert bridge.state_db.get_task(rid) is not None

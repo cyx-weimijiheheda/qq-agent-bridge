@@ -1199,6 +1199,11 @@ class WebPanel:
                 body, bridge.state_db.mark_reminder_done, "mark_reminder_done"
             )
 
+        @app.post("/api/reminders/delete", dependencies=[Depends(self._require_auth)])
+        async def api_reminder_delete(body: IdScopeIn) -> dict[str, Any]:
+            """物理删除提醒记录，和 cancel（只改状态）区分开。"""
+            return self._mutate(body, bridge.state_db.delete_reminder, "delete_reminder")
+
         # ---- 待办 ----
 
         @app.get("/api/todos", dependencies=[Depends(self._require_auth)])
@@ -1244,6 +1249,39 @@ class WebPanel:
             result = bridge.task_manager.cancel_task(body.id, user_id=owner)
             if not result.get("ok") and result.get("reason") == "not_found":
                 raise HTTPException(status_code=404, detail="未找到该任务")
+            return {"scope": owner, **result}
+
+        @app.get("/api/tasks/detail", dependencies=[Depends(self._require_auth)])
+        async def api_task_detail(
+            id: int, scope: str = "", user_id: str = ""
+        ) -> dict[str, Any]:
+            """查看单条任务的完整提示词与结果，列表里只展示摘要。"""
+            owner = self._resolve(scope, user_id)
+            task = bridge.task_manager.get_task(id, user_id=owner)
+            if not task:
+                raise HTTPException(status_code=404, detail="未找到该任务（或不属于当前作用域）")
+            stages = []
+            getter = getattr(bridge.task_manager, "list_stages", None)
+            if callable(getter):
+                try:
+                    stages = getter(id) or []
+                except Exception:
+                    stages = []
+            return {"scope": owner, "task": task, "stages": stages}
+
+        @app.post("/api/tasks/delete", dependencies=[Depends(self._require_auth)])
+        async def api_task_delete(body: IdScopeIn) -> dict[str, Any]:
+            """物理删除任务记录。运行中的任务先拒绝，避免 worker 继续写回。"""
+            owner = self._resolve(body.scope, body.user_id)
+            getter = getattr(bridge.task_manager, "get_task", None)
+            task = getter(body.id, user_id=owner) if callable(getter) else None
+            if task is None:
+                raise HTTPException(status_code=404, detail="未找到该任务（或不属于当前作用域）")
+            result = bridge.task_manager.delete_task(body.id, user_id=owner)
+            if result.get("reason") == "running_not_deletable":
+                raise HTTPException(status_code=409, detail=result["message"])
+            if not result.get("ok"):
+                raise HTTPException(status_code=404, detail="未找到该任务（或不属于当前作用域）")
             return {"scope": owner, **result}
 
         # ---- 知识库 ----
