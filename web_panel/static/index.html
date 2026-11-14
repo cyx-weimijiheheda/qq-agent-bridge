@@ -757,7 +757,7 @@ function attachLogBody(parent, lines) {
   const text = lines.join("\n").replace(/\n+$/, "");
   if (!text) return;
   const count = text.split("\n").length;
-  if (count === 1 && bytes <= 120) {
+  if (count === 1 && text.length <= 120) {
     /* 单行短正文直接内联，不占按钮 */
     parent.append(logSpan("body-inline", "「" + text + "」"));
     return;
@@ -813,22 +813,12 @@ function renderLogHead(line) {
   return { frag, tag, legacyBody };
 }
 
-function appendLogs(lines, dividerText) {
+function appendLogs(lines, dividerText, forceBottom) {
   const view = $("logView");
-  // 兜底去重：记录已渲染的行内容指纹，同一批内容不会追加第二次
-  if (!appendLogs._seen) appendLogs._seen = new Set();
-  const seen = appendLogs._seen;
-  const fresh = [];
-  for (const line of lines) {
-    const key = line.slice(0, 120);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    fresh.push(line);
-  }
-  if (appendLogs._seen.size > 4000) appendLogs._seen = new Set([...seen].slice(-2000));
-  lines = fresh;
-  if (!lines.length && !dividerText) return;
-  const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 8;
+  /* forceBottom：首次加载 / 刷新 / 清除后重载时视图是空的，
+     空视图的 scrollTop 永远等于 scrollHeight，靠 atBottom 判断不会滚下去。
+     这些时机必须强制滚到底。 */
+  const atBottom = forceBottom || view.scrollTop + view.clientHeight >= view.scrollHeight - 8;
 
   if (dividerText) {
     const d = document.createElement("div");
@@ -889,7 +879,6 @@ function appendLogs(lines, dividerText) {
 /* 清空日志视图时必须同时清空去重集合，否则重新加载的内容会被判成重复而丢弃 */
 function clearLogView() {
   $("logView").replaceChildren();
-  appendLogs._seen = new Set();
 }
 
 async function loadLogs(reset) {
@@ -912,7 +901,7 @@ async function loadLogs(reset) {
     file_id: logs.fileId,
     level: logs.level,
     q: logs.q,
-    tail_bytes: 65536,
+    tail_bytes: 1048576,
     max_lines: 500,
   });
   let d;
@@ -947,7 +936,8 @@ async function loadLogs(reset) {
      会带着旧 offset 读同一批内容，造成整块重复追加 */
   logs.offset = d.offset;
   logs.fileId = d.file_id;
-  appendLogs(d.lines, divider);
+  // reset（首次加载/刷新）或被重置时强制滚到底
+  appendLogs(d.lines, divider, reset || Boolean(divider));
 
   const kb = d.size >= 1024 ? (d.size / 1024).toFixed(1) + " KB" : d.size + " B";
   $("logMeta").textContent = d.exists

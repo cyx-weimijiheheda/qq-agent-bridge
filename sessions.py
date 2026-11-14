@@ -35,6 +35,24 @@ class SessionStore:
         self._data.setdefault(str(user_id), {})["thread_id"] = thread_id
         self.save()
 
+    def thread_owner(self, thread_id: str) -> str | None:
+        """反查某个线程属于哪个会话键。
+
+        正常情况下每个键各自持有一个线程；这里用于兜底检测「两个键指向同一
+        线程」的错误配置或数据串写，避免上下文串到别人那里。
+        """
+        target = str(thread_id or "").strip()
+        if not target:
+            return None
+        for key, data in self._data.items():
+            for field in ("persona_thread_id", "thread_id"):
+                if str(data.get(field) or "") == target:
+                    return str(key)
+            archived = data.get("archived_persona_thread_ids")
+            if isinstance(archived, list) and target in [str(x) for x in archived]:
+                return str(key)
+        return None
+
     def get_persona_thread(self, user_id: str) -> str | None:
         return self._data.get(str(user_id), {}).get("persona_thread_id")
 

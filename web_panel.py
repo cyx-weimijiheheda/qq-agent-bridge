@@ -44,7 +44,7 @@ _LEVEL_RE = re.compile(
 _LEVEL_ORDER = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 _KIND_ORDER = {"qq": 0, "group": 1, "web": 2, "other": 9}
 
-DEFAULT_TAIL_BYTES = 64 * 1024
+DEFAULT_TAIL_BYTES = 1024 * 1024
 MAX_TAIL_BYTES = 1024 * 1024
 MAX_LOG_LINES = 5000
 
@@ -848,6 +848,23 @@ class WebPanel:
             truncated = start > 0
 
         with path.open("rb") as handle:
+            # 非增量模式下 start 落在文件中间，seek 位置通常在一行半截处。
+            # 从 start 往前多读一点，把被截断的那一行整个带上，
+            # 否则丢掉残片时会把一行完整内容也一起丢，而且下次再也读不到。
+            back = 0
+            start_at_line_boundary = False
+            if not incremental and start > 0:
+                lookback = min(start, 4096)
+                handle.seek(start - lookback)
+                head = handle.read(lookback)
+                nl = head.rfind(b"\n")
+                if nl >= 0:
+                    back = lookback - nl - 1
+                    start -= back
+                    start_at_line_boundary = True
+                else:
+                    # 4KB 内没有换行，说明这行超长；放弃回退，按原逻辑丢残片
+                    start -= 0
             handle.seek(start)
             data = handle.read()
 
@@ -865,9 +882,9 @@ class WebPanel:
 
         consumed = start + cut + 1
         raw_lines = data[:cut].decode("utf-8", errors="replace").split("\n")
-        if not incremental and start > 0:
-            # 尾部 seek 会落在一行中间，首行是半截残片（还可能切断多字节字符），丢掉。
-            # 增量模式的 since 永远停在行边界上，首行是完整的，不能丢。
+        if not incremental and start > 0 and not start_at_line_boundary:
+            # 回退失败时首行仍是半截残片（还可能切断多字节字符），只能丢掉。
+            # 回退成功时 start 已对齐行首，首行是完整的，必须保留。
             raw_lines = raw_lines[1:]
 
         # 一条日志可能带多行正文；先按「行首是时间戳+级别」切成记录，

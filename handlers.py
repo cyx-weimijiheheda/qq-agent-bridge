@@ -299,6 +299,38 @@ async def _collect_link_videos(bridge: Any, text: str) -> tuple[list[dict[str, s
     return link_videos, link_video_errors
 
 
+def _ensure_thread_owner(
+    bridge: Any, key: str, field: str, scene: str = "private"
+) -> str | None:
+    """取会话线程，并确认它没有被别的会话键共用。
+
+    线程 ID 是按会话键分开保存的，正常不会串。但数据被手工改错、或将来某处
+    误用了固定 ID，就会让两个人共享同一段上下文。这里做一次反查：
+    发现线程归属别的键时，丢弃旧线程重新开始，宁可丢历史也不串人。
+    """
+    getter = getattr(bridge.store, "get_persona_thread", None)
+    thread_id = getter(key) if callable(getter) else None
+    if not thread_id:
+        return thread_id
+    owner_of = getattr(bridge.store, "thread_owner", None)
+    if not callable(owner_of):
+        return thread_id
+    owner = owner_of(thread_id)
+    if owner and owner != str(key):
+        logging.warning(
+            "会话线程 %s 同时被 %s 与 %s 引用，为防串上下文已重置 %s",
+            thread_id,
+            owner,
+            key,
+            key,
+        )
+        resetter = getattr(bridge.store, "set_persona_thread", None)
+        if callable(resetter):
+            resetter(key, "")
+        return None
+    return thread_id
+
+
 def _now_text() -> str:
     """给闲聊提示词注入当前时间。
 
@@ -547,7 +579,9 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             except Exception:
                 _trace("media", "记录群成员失败：%s", buf.sender_id, level=logging.WARNING)
 
-    thread_id = bridge.store.get_persona_thread(context_key)
+    thread_id = _ensure_thread_owner(
+        bridge, context_key, "persona_thread_id", scene="group"
+    )
     try:
         reply, new_thread_id = await run_with_policy(
             bridge,
@@ -780,7 +814,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 include_intro=False,  # 人设走 system instructions
                 now_text=_now_text(),
             )
-            thread_id = bridge.store.get_persona_thread(user_id)
+            thread_id = _ensure_thread_owner(bridge, user_id, "persona_thread_id")
         else:
             prompt = _build_work_prompt(
                 text,
