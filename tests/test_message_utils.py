@@ -595,3 +595,29 @@ def test_now_text_format():
 
     text = _now_text()
     assert _re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期[一二三四五六日]", text)
+
+
+def test_normalize_punctuation_converts_half_width():
+    """中文语境里的半角标点要换成全角。"""
+    from message_utils import normalize_punctuation
+
+    assert normalize_punctuation("?关了也是关我") == "？关了也是关我"
+    assert normalize_punctuation("你好?我是奶蛙") == "你好？我是奶蛙"
+    assert normalize_punctuation("真的吗!") == "真的吗！"
+
+
+def test_normalize_punctuation_leaves_english_and_urls():
+    """英文、URL 里的半角标点不能动。"""
+    from message_utils import normalize_punctuation
+
+    assert normalize_punctuation("Hello, world") == "Hello, world"
+    assert normalize_punctuation("https://a.com?x=1") == "https://a.com?x=1"
+
+
+def test_sanitize_applies_punctuation_normalization():
+    """清洗流程里也要生效，不能只在单测里有效。"""
+    from message_utils import sanitize_persona_reply
+
+    out = sanitize_persona_reply("?关了也是关我，不是关你嘴。")
+    assert out.startswith("？")
+    assert "?" not in out

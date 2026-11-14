@@ -558,6 +558,7 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
             full_access=bool(getattr(buf, "full_access", True)),
             group=True,
             persona=True,
+            user_id=str(session_key),
         )
     except AgentError as exc:
         _trace("model", "群聊模型调用失败：%s", exc, level=logging.ERROR)
@@ -798,6 +799,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 resolve_policy(bridge.cfg, "task" if task_mode else "casual"),
                 image_paths=image_paths or None,
                 persona=persona_mode,
+                user_id=user_id,
             )
         except AgentError as exc:
             fallback_model = str(bridge.cfg.get("fallback_model") or "").strip()
@@ -863,6 +865,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                         model=fallback_model,
                         bypass_proxy=True,
                         persona=persona_mode,
+                        user_id=user_id,
                     )
                 except AgentError as fallback_exc:
                     logging.error("兜底模型也失败：%s", fallback_exc)

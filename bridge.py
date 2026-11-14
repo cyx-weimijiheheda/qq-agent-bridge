@@ -481,6 +481,7 @@ class Bridge:
         full_access: bool = True,
         group: bool = False,
         persona: bool = False,
+        user_id: str = "",
     ) -> tuple[str, str | None]:
         kwargs: dict[str, Any] = {
             "reasoning_effort": reasoning_effort,
@@ -489,6 +490,7 @@ class Bridge:
             "full_access": full_access,
             "group": group,
             "persona": persona,
+            "user_id": user_id,
         }
         if model is not None:
             kwargs["model"] = model

@@ -71,6 +71,7 @@ def test_run_with_policy_delegates(monkeypatch):
                 full_access=True,
                 group=False,
                 persona=False,
+                user_id="",
             ):
                 captured["prompt"] = prompt
                 captured["thread_id"] = thread_id

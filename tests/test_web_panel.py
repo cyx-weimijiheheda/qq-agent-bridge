@@ -117,6 +117,7 @@ def test_web_chat_uses_bridge_pipeline(tmp_path):
             full_access=True,
             group=False,
             persona=False,
+            user_id="",
         ):
             return "网页回复", "thread-web"
 

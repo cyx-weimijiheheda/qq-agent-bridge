@@ -105,6 +105,7 @@ class RecordingCodex(AgentClient):
         full_access: bool = True,
         group: bool = False,
         persona: bool = False,
+        user_id: str = "",
     ) -> tuple[str, str | None]:
         self.calls.append(
             {
@@ -1374,6 +1375,7 @@ def test_native_vision_falls_back_to_local_vision_and_flash(monkeypatch):
                     full_access=True,
                     group=False,
                     persona=False,
+                    user_id="",
                 ):
                     self.calls.append(
                         {
@@ -1430,6 +1432,7 @@ def test_text_only_fallback_uses_fallback_model(monkeypatch):
                     full_access=True,
                     group=False,
                     persona=False,
+                    user_id="",
                 ):
                     self.calls.append(
                         {
@@ -1477,6 +1480,7 @@ def test_fallback_disabled_keeps_original_error(monkeypatch):
                     full_access=True,
                     group=False,
                     persona=False,
+                    user_id="",
                 ):
                     self.calls.append(
                         {

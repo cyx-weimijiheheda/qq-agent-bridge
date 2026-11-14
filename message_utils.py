@@ -783,6 +783,56 @@ def strip_emoticons(text: str, cfg: dict[str, Any] | None = None) -> str:
     return out
 
 
+_HALF_TO_FULL = {
+    "?": "？", "!": "！", ",": "，", ":": "：", ";": "；",
+    "(": "（", ")": "）",
+}
+
+
+# 颜文字形如 (￣ω￣)、(._.)，括号和符号是造型的一部分，换成全角就变形。
+# 规范化标点前先把它们整体保护起来，处理完再还原。
+# 注意不要复用 strip_emoticons 的 _KAOMOJI_RE —— 两者用途不同。
+_PROTECT_KAOMOJI_RE = re.compile(
+    r"\([^()\u4e00-\u9fff]{0,12}[^\x00-\x7f][^()]{0,12}\)"
+)
+
+
+def normalize_punctuation(text: str) -> str:
+    """把中文语境里的半角标点换成全角。
+
+    模型偶尔会写半角 ? ! , : ;，在 QQ 里和正文挤在一起很难看。
+    只处理紧贴中文的情况，代码、URL、英文和颜文字里的半角标点不动。
+    """
+    if not text:
+        return text
+
+    protected: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"\x00{len(protected) - 1}\x00"
+
+    text = _PROTECT_KAOMOJI_RE.sub(stash, text)
+
+    pattern = re.compile(
+        r"(?<=[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef」』）】》])"
+        r"([?!,:;()])"
+        r"|([?!,:;()])(?=[\u4e00-\u9fff])"
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        ch = match.group(1) or match.group(2)
+        return _HALF_TO_FULL.get(ch, ch)
+
+    text = pattern.sub(repl, text)
+    for index, original in enumerate(protected):
+        text = text.replace(f"\x00{index}\x00", original)
+    # 句首问号不该跟在逗号后面：「辣虾，？你这一嗓子」读起来是断的
+    text = re.sub(r"([，。；：、])\s*？", r"？", text)
+    text = re.sub(r"？\s*([，。；：、])", r"？", text)
+    return text
+
+
 def sanitize_persona_reply(reply: str, cfg: dict[str, Any] | None = None) -> str:
     text = _THINK_BLOCK_RE.sub("", reply or "")
     text = text.replace("```", "")
@@ -806,9 +856,12 @@ def sanitize_persona_reply(reply: str, cfg: dict[str, Any] | None = None) -> str
     cleaned = "\n".join(kept)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     cleaned = re.sub(r"(?:\n---){2,}", "\n---", cleaned)
+    # 先剥颜文字再规范化标点：反过来的话颜文字会被改成全角括号，
+    # 剥离规则就匹配不上了。
     if cfg and bool(cfg.get("strip_emoticons", False)):
         cleaned = strip_emoticons(cleaned, cfg)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = normalize_punctuation(cleaned)
     return cleaned.strip(" \n-")
 
 

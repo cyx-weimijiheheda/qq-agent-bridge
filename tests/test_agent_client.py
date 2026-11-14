@@ -254,7 +254,7 @@ def test_run_passes_tool_profile_down(tmp_path, monkeypatch):
     fake_agent = FakeAgent()
     captured = {}
 
-    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False, persona=False):
+    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False, persona=False, user_id=""):
         captured["model"] = model
         captured["full_access"] = full_access
         captured["group"] = group
@@ -272,7 +272,7 @@ def test_run_defaults_to_full_access_private(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
     captured = {}
 
-    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False, persona=False):
+    def fake_get_agent(model, effort, timeout, *, full_access=True, group=False, persona=False, user_id=""):
         captured["full_access"] = full_access
         captured["group"] = group
         captured["persona"] = persona

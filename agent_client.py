@@ -246,6 +246,131 @@ class AgentClient:
             path = self._bridge_dir / path
         return StateDB(path)
 
+    def _build_reminder_tools(self, user_id: str, full_access: bool) -> list[Any]:
+        """提醒与待办工具。
+
+        此前只有 /提醒 这类命令能创建提醒，命令靠前缀拦截，模型看不到。
+        用户用自然语言说「提醒我明天考试」，模型只能口头答应，实际什么都没存。
+        这两个工具让模型能真正落库。
+
+        只给可信账号：写库操作不该对群友开放。
+        """
+        if not full_access or not user_id:
+            return []
+        try:
+            from agno.tools import Function
+
+            db = self._get_state_db()
+
+            def create_reminder(content: str, when: str) -> str:
+                from scheduler import add_reminder_from_text
+
+                raw = f"{content} {when}".strip()
+                return add_reminder_from_text(db, user_id, raw)
+
+            def list_reminders() -> str:
+                rows = db.list_reminders(user_id)
+                if not rows:
+                    return "（暂无提醒）"
+                lines = []
+                for row in rows:
+                    repeat = f"（{row['repeat']}）" if row["repeat"] != "none" else ""
+                    lines.append(
+                        f"#{row['id']} {row['text']} @ {row['remind_at']}{repeat} [{row['status']}]"
+                    )
+                return "\n".join(lines)
+
+            def cancel_reminder(reminder_id: int) -> str:
+                ok = db.cancel_reminder(reminder_id, user_id=user_id)
+                return f"已取消提醒 #{reminder_id}" if ok else f"没找到提醒 #{reminder_id}"
+
+            def create_todo(content: str, due: str = "") -> str:
+                todo_id = db.add_todo(user_id, content, due)
+                suffix = f"，截止 {due}" if due else ""
+                return f"已记下待办 #{todo_id}：{content}{suffix}"
+
+            def list_todos() -> str:
+                rows = db.list_todos(user_id)
+                if not rows:
+                    return "（暂无待办）"
+                return "\n".join(
+                    f"#{row['id']} {row['text']} [{'已完成' if row['done'] else '进行中'}]"
+                    for row in rows
+                )
+
+            def complete_todo(todo_id: int) -> str:
+                ok = db.complete_todo(todo_id, user_id=user_id)
+                return f"待办 #{todo_id} 已完成" if ok else f"没找到待办 #{todo_id}"
+
+            return [
+                Function(
+                    name="create_reminder",
+                    description=(
+                        "创建定时提醒，到点会自动发消息。用户说「提醒我……」时用它。"
+                        "when 必须写相对或绝对时间，如「明天13点20分」「明天9点」「每天8点」。"
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "提醒内容，如「数学分析考试」"},
+                            "when": {"type": "string", "description": "提醒时间，如「明天13点20分」"},
+                        },
+                        "required": ["content", "when"],
+                    },
+                    entrypoint=create_reminder,
+                ),
+                Function(
+                    name="list_reminders",
+                    description="列出当前所有提醒。用户问「我有哪些提醒」时用它。",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                    entrypoint=list_reminders,
+                ),
+                Function(
+                    name="cancel_reminder",
+                    description="按编号取消提醒。",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "reminder_id": {"type": "integer", "description": "提醒编号"}
+                        },
+                        "required": ["reminder_id"],
+                    },
+                    entrypoint=cancel_reminder,
+                ),
+                Function(
+                    name="create_todo",
+                    description="记一条待办。用户说「记一下要做什么」时用它。",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "待办内容"},
+                            "due": {"type": "string", "description": "截止时间，可留空"},
+                        },
+                        "required": ["content"],
+                    },
+                    entrypoint=create_todo,
+                ),
+                Function(
+                    name="list_todos",
+                    description="列出当前所有待办。",
+                    parameters={"type": "object", "properties": {}, "required": []},
+                    entrypoint=list_todos,
+                ),
+                Function(
+                    name="complete_todo",
+                    description="把某条待办标记为已完成。",
+                    parameters={
+                        "type": "object",
+                        "properties": {"todo_id": {"type": "integer", "description": "待办编号"}},
+                        "required": ["todo_id"],
+                    },
+                    entrypoint=complete_todo,
+                ),
+            ]
+        except Exception as exc:
+            logging.warning("提醒/待办工具初始化失败：%s", exc)
+            return []
+
     def _build_knowledge_tool(self) -> Any | None:
         if not self.cfg.get("knowledge_tool_enabled", True):
             return None
@@ -419,7 +544,7 @@ class AgentClient:
             logging.warning("技能工具加载失败：%s", exc)
             return []
 
-    def _build_tools(self, full_access: bool = True) -> list[Any]:
+    def _build_tools(self, full_access: bool = True, user_id: str = "") -> list[Any]:
         """组装工具集。
 
         full_access=False 时**不装配** ShellTools 与 FileTools —— 模型实例里
@@ -453,6 +578,7 @@ class AgentClient:
                     )
                 except Exception as exc:
                     logging.warning("FileTools 初始化失败：%s", exc)
+            tools.extend(self._build_reminder_tools(user_id, full_access))
             cn_tool = self._build_cn_search_tool()
             if cn_tool is not None:
                 tools.append(cn_tool)
@@ -520,8 +646,9 @@ class AgentClient:
         full_access: bool = True,
         group: bool = False,
         persona: bool = False,
+        user_id: str = "",
     ) -> Agent:
-        key = (model, reasoning_effort or "", timeout, full_access, group, persona)
+        key = (model, reasoning_effort or "", timeout, full_access, group, persona, user_id)
         agent = self._agents.get(key)
         if agent is not None:
             return agent
@@ -545,7 +672,7 @@ class AgentClient:
                 if group
                 else self.cfg.get("history_turns", 20)
             ),
-            tools=self._build_tools(full_access),
+            tools=self._build_tools(full_access, user_id),
             # 人设放 system instructions：agno 会把 user prompt 写进会话历史，
             # 整套人设若每轮都塞进 user prompt，下一轮就会在“对话”里看见提示词。
             instructions=(
@@ -573,6 +700,7 @@ class AgentClient:
         full_access: bool = True,
         group: bool = False,
         persona: bool = False,
+        user_id: str = "",
     ) -> tuple[str, str | None]:
         del model_provider  # 服务商由 api_base_url 决定，参数保留仅为接口兼容
         del bypass_proxy  # 内置 HTTP 客户端默认不信任代理环境变量
@@ -589,6 +717,7 @@ class AgentClient:
             full_access=full_access,
             group=group,
             persona=persona,
+            user_id=user_id or "",
         )
         images = [Image(filepath=str(p)) for p in (image_paths or [])]
         # 每个会话一个稳定的 x-opencode-session：同一 thread 的多次请求用同一 ID
