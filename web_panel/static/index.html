@@ -731,6 +731,19 @@ const TRACE_TAG_RE = /^\[([a-z]+)\]\s?/;
 /* 早期版本把正文 JSON 转义塞在行尾，这里继续兼容，避免历史日志显示成乱码 */
 const LOG_BODY_RE = / \{\{BODY:([\s\S]*)\}\}$/;
 
+/* 与后端 estimate_tokens 保持一致的粗略估算：中日韩 1.5 字符/token，其余 3.5 */
+function estTok(text) {
+  const s = String(text || "");
+  let cjk = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0);
+    if ((code >= 0x3400 && code <= 0x9fff) || (code >= 0x3040 && code <= 0x30ff) ||
+        (code >= 0xac00 && code <= 0xd7af)) cjk += 1;
+  }
+  const other = s.length - cjk;
+  return Math.round(cjk / 1.5 + other / 3.5);
+}
+
 function logSpan(cls, text) {
   const el = document.createElement("span");
   if (cls) el.className = cls;
@@ -744,7 +757,6 @@ function attachLogBody(parent, lines) {
   const text = lines.join("\n").replace(/\n+$/, "");
   if (!text) return;
   const count = text.split("\n").length;
-  const bytes = text.length;
   if (count === 1 && bytes <= 120) {
     /* 单行短正文直接内联，不占按钮 */
     parent.append(logSpan("body-inline", "「" + text + "」"));
@@ -752,14 +764,14 @@ function attachLogBody(parent, lines) {
   }
   const btn = document.createElement("button");
   btn.className = "body-toggle";
-  btn.textContent = "展开正文 · " + count + " 行 / " + bytes + " 字";
+  btn.textContent = "展开正文 · " + count + " 行 / " + estTok(text) + " tok";
   const box = document.createElement("span");
   box.className = "body-text";
   box.hidden = true;
   box.textContent = text;
   btn.addEventListener("click", () => {
     box.hidden = !box.hidden;
-    btn.textContent = box.hidden ? "展开正文 · " + count + " 行 / " + bytes + " 字" : "收起正文";
+    btn.textContent = box.hidden ? "展开正文 · " + count + " 行 / " + estTok(text) + " tok" : "收起正文";
   });
   parent.append(btn, box);
 }
@@ -1047,7 +1059,7 @@ async function loadTasks() {
   for (const t of d.tasks) {
     const running = t.status === "running";
     const final = ["done", "failed", "cancelled"].includes(t.status);
-    const sub = [t.status, t.kind, (t.prompt || "").length + " 字"].join(" · ")
+    const sub = [t.status, t.kind, estTok(t.prompt) + " tok"].join(" · ")
       + (t.error ? " · " + t.error : "");
     box.append(makeRow({
       id: t.id,

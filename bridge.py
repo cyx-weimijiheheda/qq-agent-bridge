@@ -32,6 +32,7 @@ from sessions import SessionStore
 from state_db import StateDB
 from targets import group_key, parse_key, to_id
 from task_manager import TaskManager
+from trace_log import estimate_tokens
 from trace_log import trace as _trace
 from tts_client import LocalGPTSoVITSClient
 from vision_client import build_vision_prompt, describe_image, vision_settings
@@ -873,10 +874,10 @@ class Bridge:
         await self.ws.send(json.dumps(payload, ensure_ascii=False))
         _trace(
             "send",
-            "已发送到 %s（%s）%d 字",
+            "已发送到 %s（%s）%d tok",
             target,
             scene,
-            len(text),
+            estimate_tokens(text),
             body=text,
         )
         self.store.mark_activity(target)

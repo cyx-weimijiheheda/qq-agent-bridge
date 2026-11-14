@@ -63,3 +63,23 @@ def test_trace_without_body_stays_single_line(caplog):
     with caplog.at_level(logging.INFO):
         trace("recv", "收到")
     assert len(caplog.text.strip().splitlines()) == 1
+
+
+def test_estimate_tokens_mixed_text():
+    """中日韩按 1.5 字符/token，其余按 3.5，仅用于展示，不参与计费。"""
+    from trace_log import estimate_tokens
+
+    assert estimate_tokens("") == 0
+    assert estimate_tokens("你好") == 1          # 2 汉字 / 1.5 ≈ 1
+    assert estimate_tokens("Hello world") == 3   # 11 字符 / 3.5 ≈ 3
+    # 中英混排应落在纯中文与纯英文之间
+    mixed = estimate_tokens("嘎嘎滴辣虾 bug")
+    assert 3 <= mixed <= 12
+
+
+def test_estimate_tokens_counts_japanese_and_korean():
+    """日文假名与韩文同样按宽字符计算。"""
+    from trace_log import estimate_tokens
+
+    assert estimate_tokens("こんにちは") >= 3
+    assert estimate_tokens("안녕하세요") >= 3

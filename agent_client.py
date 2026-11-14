@@ -29,6 +29,7 @@ from agno.memory import MemoryManager
 from agno.models.openai import OpenAIChat
 
 from message_utils import persona_system_prompt
+from trace_log import estimate_tokens
 from trace_log import trace as _trace
 from vision_client import BROWSER_UA
 
@@ -595,14 +596,14 @@ class AgentClient:
         started_at = time.monotonic()
         _trace(
             "model",
-            "开始调用 model=%s 流式=%s timeout=%.0fs thread=%s 场景=%s 工具=%s 提示词=%d字 图片=%d",
+            "开始调用 model=%s 流式=%s timeout=%.0fs thread=%s 场景=%s 工具=%s 提示词约 %d tok 图片=%d",
             model_name,
             "是" if self._force_stream else "否",
             effective_timeout,
             session_id,
             "群聊" if group else "私聊",
             "完整" if full_access else "受限",
-            len(prompt or ""),
+            estimate_tokens(prompt or ""),
             len(image_paths or []),
         )
         try:
@@ -636,13 +637,30 @@ class AgentClient:
         except Exception:
             content = str(run_output.content or "")
         content = (content or "").strip()
-        _trace(
-            "model",
-            "调用结束 耗时 %.1fs 输出 %d 字 thread=%s",
-            time.monotonic() - started_at,
-            len(content),
-            session_id,
-        )
+        # 用网关回报的真实用量，不做字符估算
+        metrics = getattr(run_output, "metrics", None)
+        in_tok = int(getattr(metrics, "input_tokens", 0) or 0)
+        out_tok = int(getattr(metrics, "output_tokens", 0) or 0)
+        cache_tok = int(getattr(metrics, "cache_read_tokens", 0) or 0)
+        if in_tok or out_tok:
+            _trace(
+                "model",
+                "调用结束 耗时 %.1fs 输入 %d tok 输出 %d tok 缓存命中 %d tok thread=%s",
+                time.monotonic() - started_at,
+                in_tok,
+                out_tok,
+                cache_tok,
+                session_id,
+            )
+        else:
+            # 网关没回 usage 时才退回字符估算，并在日志里标明是估算
+            _trace(
+                "model",
+                "调用结束 耗时 %.1fs 输出约 %d tok（网关未返回 usage）thread=%s",
+                time.monotonic() - started_at,
+                estimate_tokens(content),
+                session_id,
+            )
         if not content:
             raise AgentError("模型没有返回结果", thread_id=session_id)
         new_session_id = str(run_output.session_id or session_id)

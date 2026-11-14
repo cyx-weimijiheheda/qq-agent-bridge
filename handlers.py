@@ -31,6 +31,7 @@ from message_utils import (
 from pdf_utils import extract_pdf_text
 from reply_sender import send_reply
 from timetable import format_preview, load_timetable, parse_csv, parse_xlsx, save_timetable
+from trace_log import estimate_tokens
 from trace_log import trace as _trace
 from video_utils import (
     build_videoshot_from_frames,
@@ -480,9 +481,9 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         )
     _trace(
         "prompt",
-        "群 %s 组装提示词：%d 字（图片 %d，视频 %d，文件 %d，表情 %d）",
+        "群 %s 组装提示词：约 %d tok（图片 %d，视频 %d，文件 %d，表情 %d）",
         buf.group_id,
-        len(prompt),
+        estimate_tokens(prompt),
         len(image_paths),
         len(video_infos),
         len(file_infos),
@@ -568,9 +569,9 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         bridge.store.set_persona_thread(context_key, new_thread_id)
     _trace(
         "reply",
-        "群 %s 模型输出 %d 字",
+        "群 %s 模型输出 %d tok",
         buf.group_id,
-        len(reply or ""),
+        estimate_tokens(reply or ""),
         body=reply or "",
     )
     reply = sanitize_persona_reply(reply, bridge.cfg)
@@ -900,9 +901,9 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
             reply = sanitize_persona_reply(reply, bridge.cfg)
         _trace(
             "reply",
-            "私聊 %s 模型输出 %d 字",
+            "私聊 %s 模型输出 %d tok",
             user_id,
-            len(reply or ""),
+            estimate_tokens(reply or ""),
             body=reply or "",
         )
         await send_reply(

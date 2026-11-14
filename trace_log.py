@@ -22,7 +22,7 @@
 
 传了 `body` 时，正文会作为**后续多行**原样写进日志文件，保持可读：
 
-    2026-11-13 23:07:04,505 INFO handlers [reply] 群 1 模型输出 57 字
+    2026-11-13 23:07:04,505 INFO handlers [reply] 群 1 模型输出 36 tok
     嘎嘎滴辣虾！
     技术问题升级成池塘玄学了。
 
@@ -48,6 +48,26 @@ TRACE_TAGS = (
     "cfg",
     "probe",
 )
+
+
+# 中文按字符估算 token 会严重低估：一个字常被切成 2~4 个 token。
+# 这里用一个保守的混合估算，只用于日志展示和面板显示，不参与计费判断。
+_CJK_PER_TOKEN = 1.5   # 中文约 1.5 字符 / token
+_ASCII_PER_TOKEN = 3.5  # 英文、数字、标点约 3.5 字符 / token
+
+
+def estimate_tokens(text: str) -> int:
+    """粗略估算 token 数，中日韩按 1.5 字符/token，其余按 3.5 字符/token。"""
+    if not text:
+        return 0
+    cjk = 0
+    other = 0
+    for ch in str(text):
+        if "\u3400" <= ch <= "\u9fff" or "\u3040" <= ch <= "\u30ff" or "\uac00" <= ch <= "\ud7af":
+            cjk += 1
+        else:
+            other += 1
+    return int(cjk / _CJK_PER_TOKEN + other / _ASCII_PER_TOKEN + 0.5)
 
 
 def trace(
