@@ -539,7 +539,11 @@ class AgentClient:
             add_memories_to_context=memory_on
             and bool(self.cfg.get("memory_in_chat", True)),
             add_history_to_context=True,
-            num_history_runs=int(self.cfg.get("history_turns", 20)),
+            num_history_runs=int(
+                self.cfg.get("group_history_turns", 8)
+                if group
+                else self.cfg.get("history_turns", 20)
+            ),
             tools=self._build_tools(full_access),
             # 人设放 system instructions：agno 会把 user prompt 写进会话历史，
             # 整套人设若每轮都塞进 user prompt，下一轮就会在“对话”里看见提示词。

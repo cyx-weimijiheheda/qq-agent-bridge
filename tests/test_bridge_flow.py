@@ -213,6 +213,10 @@ def test_roleplay_casual_multipart_flow():
                     encoding="utf-8",
                 )
                 cfg = load_config(cfg_path)
+                # 固定规则在 system instructions 里，临时目录删掉后就取不到了，先算好
+                from message_utils import persona_system_prompt
+
+                system_text = persona_system_prompt(cfg)
                 store = SessionStore(Path(tmp) / "sessions.json")
                 bridge = Bridge(cfg, store, AgentClient(cfg))
                 task = asyncio.create_task(bridge.connect_loop())
@@ -229,8 +233,10 @@ def test_roleplay_casual_multipart_flow():
                 os.environ.pop("FAKE_AGENT_PROMPT_FILE", None)
                 os.environ.pop("FAKE_AGENT_REPLY", None)
         assert replies == ["……嗯。", "今天很平静。", "你呢？"]
-        assert "对话风格" in prompt_text
-        assert "活人感" in prompt_text
+        # 对话风格属于固定规则，已并入 system instructions；user prompt 只留动态内容
+        assert "对话风格" in system_text
+        assert "对话风格" not in prompt_text
+        assert "活人感" in system_text
 
     asyncio.run(scenario())
 
@@ -513,6 +519,10 @@ def test_sticker_message_flow():
                     encoding="utf-8",
                 )
                 cfg = load_config(cfg_path)
+                # 固定规则在 system instructions 里，临时目录删掉后就取不到了，先算好
+                from message_utils import persona_system_prompt
+
+                system_text = persona_system_prompt(cfg)
                 store = SessionStore(Path(tmp) / "sessions.json")
                 bridge = Bridge(cfg, store, AgentClient(cfg))
                 task = asyncio.create_task(bridge.connect_loop())
@@ -530,7 +540,8 @@ def test_sticker_message_flow():
         assert "假的 Codex 回复" in replies[0]
         assert "QQ表情：178" in prompt_text
         assert "商城表情：a|b|c|哈" in prompt_text
-        assert "[FACE:" in prompt_text
+        # 标记用法属于固定规则，改由 system instructions 提供
+        assert "[FACE:" in system_text
 
     asyncio.run(scenario())
 

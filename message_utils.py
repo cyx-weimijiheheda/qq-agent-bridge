@@ -437,15 +437,56 @@ PROMPT_PRIVACY_RULE = (
 )
 
 
+CHAT_STATIC_GUIDES = (
+    "对话风格（可选，按需保留或改写）：\n"
+    "1. 闲聊可以按内容和情绪拆成 2~4 条消息（用“---”分隔），每条说一个完整的意思；"
+    "不要每条只有一句干巴巴的短句，也不要整段挤成一条消息。"
+    "简单应答（“嗯。”“了解。”）仍可单条短句，不必硬凑。\n"
+    "2. 颜文字内嵌在句子中或句尾使用（不单独成行），可以频繁；"
+    "示例：{kaomoji}；"
+    "同一条里不要重复同一个，连着几条尽量换着用。\n"
+    "3. 语气保持自然、稳定：不刷感叹号，不连续撒娇，不解释自己的心理活动。\n"
+    "4. 长短句、语气、话量随话题和情绪走：重要的事多说几句，轻松的事可以更松弛一点。\n"
+)
+
+
+def persona_static_guides(cfg: dict[str, Any] | None = None) -> str:
+    """与单轮消息无关、每轮都一样的规则。
+
+    这些规则以前拼在 user prompt 里，每轮发一遍，还会原样存进会话历史，
+    20 轮历史就等于把同一段话重复 20 次。放进 system instructions 后：
+    每轮省下几百 token，历史里也不再重复，同时 system 前缀稳定，
+    更利于服务端做上下文缓存。
+    """
+    cfg = cfg or {}
+    parts: list[str] = []
+    parts.append(_guide(CHAT_STYLE_GUIDE_TEMPLATE, cfg.get("chat_style_guide"), kaomoji=_kaomoji_hint(cfg)))
+    parts.append(_guide(MEDIA_FREQUENCY_GUIDE, cfg.get("media_frequency_guide")))
+    voice = _voice_rule(cfg)
+    if voice:
+        parts.append(voice.strip())
+    parts.append(_guide(MEDIA_MARKER_GUIDE, cfg.get("media_marker_guide")))
+    parts.append(
+        "如果对方问起实时资讯，或向你要图/画/梗图，可以使用可用的搜索工具获取实时内容；"
+        "图片用 [IMAGE:URL] 标记发送。"
+    )
+    parts.append(NO_IMAGE_REMINDER)
+    return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+
 def persona_system_prompt(cfg: dict[str, Any] | None = None) -> str:
-    """静态人设与保密规则。
+    """静态人设、保密规则与固定的对话规则。
 
     放进模型的 system instructions，而不是每轮的 user prompt —— 后者会被写进
     会话历史，下一轮模型就在“对话”里看见自己的整套提示词，既挤占上下文，
     也会诱发复述（“前面那一大坨设定”）。
     """
     cfg = cfg or {}
-    parts = [persona_intro(str(cfg.get("persona_skill") or ""), cfg), PROMPT_PRIVACY_RULE]
+    parts = [
+        persona_intro(str(cfg.get("persona_skill") or ""), cfg),
+        PROMPT_PRIVACY_RULE,
+        persona_static_guides(cfg),
+    ]
     return "\n".join(part for part in parts if part and part.strip())
 
 
@@ -511,16 +552,12 @@ def build_persona_prompt(
     now_text: str = "",
 ) -> str:
     cfg = cfg or {}
-    # include_intro=False：人设已放进 agent 的 system instructions，
-    # 这里只拼每轮动态内容，避免整套人设被写进会话历史。
+    # 固定规则（对话风格、媒体标记、语音规则等）已并入 persona_system_prompt，
+    # 这里只拼**这一轮特有**的内容：时间、媒体信息、记忆、搜索建议、用户消息。
+    # 这样同一段规则不会随每轮请求重复发送，也不会被写进会话历史。
     prompt = persona_intro(skill, cfg) if include_intro else ""
-    if casual_multipart:
-        prompt += "\n" + _guide(
-            CHAT_STYLE_GUIDE_TEMPLATE, cfg.get("chat_style_guide"), kaomoji=_kaomoji_hint(cfg)
-        ) + "\n"
-        prompt += "\n" + _guide(
-            MEDIA_FREQUENCY_GUIDE, cfg.get("media_frequency_guide")
-        ) + "\n"
+    if include_intro and casual_multipart:
+        prompt += "\n" + persona_static_guides(cfg) + "\n"
     if now_text:
         # 模型没有内置时钟，群聊里非白名单成员也拿不到 shell，
         # 不注入时间就只能靠训练数据瞎猜。
@@ -546,12 +583,15 @@ def build_persona_prompt(
             + memory_text.strip()
             + "\n"
         )
-    prompt += _voice_rule(cfg)
-    prompt += "\n" + _guide(MEDIA_MARKER_GUIDE, cfg.get("media_marker_guide")) + "\n"
-    prompt += (
-        "\n如果对方问起实时资讯，或向你要图/画/梗图，"
-        "可以使用可用的搜索工具获取实时内容；图片用 [IMAGE:URL] 标记发送。\n"
-    )
+    if include_intro:
+        # 自己拼完整提示词时（没走 system instructions）才补上固定规则
+        tail = _voice_rule(cfg)
+        tail += "\n" + _guide(MEDIA_MARKER_GUIDE, cfg.get("media_marker_guide")) + "\n"
+        tail += (
+            "\n如果对方问起实时资讯，或向你要图/画/梗图，"
+            "可以使用可用的搜索工具获取实时内容；图片用 [IMAGE:URL] 标记发送。\n"
+        )
+        prompt += tail
     image_search_tool = str(cfg.get("image_search_tool") or "").strip()
     image_keywords = ("图", "画", "梗图", "图片", "表情包")
     if image_search_tool and text and any(keyword in text for keyword in image_keywords):
@@ -565,7 +605,8 @@ def build_persona_prompt(
             + image_suggestions
             + "\n"
         )
-    prompt += "\n" + NO_IMAGE_REMINDER + "\n"
+    if include_intro:
+        prompt += "\n" + NO_IMAGE_REMINDER + "\n"
     prompt += "\n用户消息：\n" + (text or "（用户只发了图片或表情，请根据内容直接回答）")
     prompt += _skill_trigger_hint(text, cfg)
     return prompt

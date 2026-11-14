@@ -82,7 +82,10 @@ DEFAULTS: dict[str, Any] = {
     "memory_enabled": True,  # 长期记忆
     "memory_auto_update": True,  # 每次对话后自动沉淀记忆
     "memory_in_chat": True,  # 把记忆注入上下文
-    "history_turns": 20,  # 每次带多少轮历史
+    "history_turns": 20,  # 每次带多少轮历史（私聊）
+    # 群聊每条消息都可能触发模型，同一个群还有多个成员在聊，
+    # 历史给太长会让每条消息都重复付费；默认只带最近几轮。
+    "group_history_turns": 8,
     "knowledge_tool_enabled": True,  # 允许助手检索本地知识库
     "skills_tool_enabled": True,  # 允许助手调用 skills/ 下的外部技能
     "memory_effort": "low",

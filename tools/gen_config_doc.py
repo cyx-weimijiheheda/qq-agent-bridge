@@ -57,7 +57,7 @@ GROUPS: list[tuple[str, str, list[str]]] = [
         [
             "tools_enabled", "shell_enabled", "file_tools_enabled", "web_search_enabled",
             "knowledge_tool_enabled", "skills_tool_enabled", "github_token",
-            "memory_enabled", "memory_auto_update", "memory_in_chat", "history_turns",
+            "memory_enabled", "memory_auto_update", "memory_in_chat", "history_turns", "group_history_turns",
             "memory_effort", "memory_timeout",
         ],
     ),
@@ -255,7 +255,8 @@ DESCRIPTIONS: dict[str, str] = {
     "memory_enabled": "长期记忆总开关",
     "memory_auto_update": "每次对话后自动把值得记的内容沉淀进记忆",
     "memory_in_chat": "把长期记忆注入对话上下文",
-    "history_turns": "每次请求带多少轮历史对话",
+    "history_turns": "每次请求带多少轮历史对话（私聊）",
+    "group_history_turns": "群聊每次带多少轮历史；群消息频率高，太长会显著增加用量",
     "memory_effort": "记忆整理用的推理强度",
     "memory_timeout": "记忆整理超时（秒）",
     # 推理强度与超时

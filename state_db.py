@@ -510,7 +510,7 @@ class StateDB:
         return self._search_documents_by_terms(trimmed, int(limit))
 
     @staticmethod
-    def _knowledge_terms(query: str, max_terms: int = 12) -> list[str]:
+    def _knowledge_terms(query: str, max_terms: int = 24) -> list[str]:
         """把查询拆成可用于 LIKE 的词：英文/数字整段，中文取三字窗。"""
         parts = re.findall(r"[0-9A-Za-z_]+|[\u4e00-\u9fff]+", query)
         # 「是什么梗」「怎么办」「什么意思」这类疑问壳没有检索价值，
@@ -525,14 +525,23 @@ class StateDB:
         terms: list[str] = []
         for part in parts:
             is_cjk = bool(re.match(r"[\u4e00-\u9fff]", part))
-            if not is_cjk or len(part) <= 6:
-                # 英文/数字整段就是一个可检索的词；短中文（≤6 字）整段用，
-                # 再补它的双字前缀，避免「安迪」这种两字词条被三字窗漏掉
+            if not is_cjk:
+                # 英文/数字整段就是一个可检索的词
                 candidates = [part]
-                if is_cjk and len(part) > 2:
-                    candidates += [part[:2], part[-2:]]
+            elif len(part) <= 6:
+                # 短中文：整段 + 全部双字/三字片段。
+                # 只给前后缀会漏掉中间词，例如「对方装懂怼」里的「对方装」。
+                candidates = [part]
+                for size in (2, 3):
+                    candidates += [
+                        part[i : i + size] for i in range(len(part) - size + 1)
+                    ]
             else:
-                candidates = [part[i : i + 3] for i in range(len(part) - 2)]
+                candidates = [part]
+                for size in (3, 4):
+                    candidates += [
+                        part[i : i + size] for i in range(len(part) - size + 1)
+                    ]
             for candidate in candidates:
                 if candidate and candidate not in terms:
                     terms.append(candidate)
@@ -553,12 +562,24 @@ class StateDB:
         )
         if not candidates:
             return []
-        # 命中词越多越靠前，同分按内容长度取短的（更聚焦）
+        # 打分：标题命中权重更高，长词命中比短词更有区分度。
+        # 只数命中个数会让「对方」「什么」这类泛词把结果拉平，所以再按词长加权。
         scored = []
         for row in candidates:
-            haystack = f"{row.get('title') or ''}{row.get('content') or ''}"
-            score = sum(1 for term in terms if term in haystack)
-            scored.append((score, -len(row.get("content") or ""), row))
+            title = str(row.get("title") or "")
+            content = str(row.get("content") or "")
+            haystack = title + content
+            score = 0.0
+            longest = 0
+            for term in terms:
+                if term not in haystack:
+                    continue
+                longest = max(longest, len(term))
+                score += 1.0
+                if term in title:
+                    score += 2.0
+            score += longest * 0.5
+            scored.append((score, -len(content), row))
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         results = []
         for _, _, row in scored[:limit]:

@@ -101,7 +101,8 @@
 | `memory_enabled` | `true` | 长期记忆总开关 |
 | `memory_auto_update` | `true` | 每次对话后自动把值得记的内容沉淀进记忆 |
 | `memory_in_chat` | `true` | 把长期记忆注入对话上下文 |
-| `history_turns` | `20` | 每次请求带多少轮历史对话 |
+| `history_turns` | `20` | 每次请求带多少轮历史对话（私聊） |
+| `group_history_turns` | `8` | 群聊每次带多少轮历史；群消息频率高，太长会显著增加用量 |
 | `memory_effort` | `low` | 记忆整理用的推理强度 |
 | `memory_timeout` | `180` | 记忆整理超时（秒） |
 
