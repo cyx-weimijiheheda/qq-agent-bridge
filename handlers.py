@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 import re
 import shutil
@@ -297,6 +298,17 @@ async def _collect_link_videos(bridge: Any, text: str) -> tuple[list[dict[str, s
     return link_videos, link_video_errors
 
 
+def _now_text() -> str:
+    """给闲聊提示词注入当前时间。
+
+    模型没有内置时钟；群里除白名单外都拿不到 shell，不注入就只能瞎猜。
+    格式与主动消息保持一致（YYYY-MM-DD HH:MM 星期X）。
+    """
+    now = _dt.datetime.now()
+    weekday = "一二三四五六日"[now.weekday()]
+    return f"{now:%Y-%m-%d %H:%M} 星期{weekday}"
+
+
 async def _collect_images(
     bridge: Any,
     buf: Any,
@@ -449,6 +461,7 @@ async def process_group_buffer(bridge: Any, session_key: str, buf: Any) -> None:
         memory_text="",  # 群聊不注入主人记忆
         cfg=bridge.cfg,
         include_intro=False,  # 人设走 system instructions，避免写进群会话历史
+        now_text=_now_text(),
     )
     trigger_context = (
         f"本轮由 {buf.sender_name or buf.sender_id}（QQ {buf.sender_id}）@ 你触发。"
@@ -763,6 +776,7 @@ async def process_buffer_impl(bridge: Any, user_id: str, buf: Any) -> None:
                 image_suggestions=image_suggestions,
                 cfg=bridge.cfg,
                 include_intro=False,  # 人设走 system instructions
+                now_text=_now_text(),
             )
             thread_id = bridge.store.get_persona_thread(user_id)
         else:

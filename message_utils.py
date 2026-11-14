@@ -508,6 +508,7 @@ def build_persona_prompt(
     image_suggestions: str = "",
     cfg: dict[str, Any] | None = None,
     include_intro: bool = True,
+    now_text: str = "",
 ) -> str:
     cfg = cfg or {}
     # include_intro=False：人设已放进 agent 的 system instructions，
@@ -520,6 +521,10 @@ def build_persona_prompt(
         prompt += "\n" + _guide(
             MEDIA_FREQUENCY_GUIDE, cfg.get("media_frequency_guide")
         ) + "\n"
+    if now_text:
+        # 模型没有内置时钟，群聊里非白名单成员也拿不到 shell，
+        # 不注入时间就只能靠训练数据瞎猜。
+        prompt += f"\n当前时间：{now_text}\n"
     if image_count > 0:
         prompt += (
             f"\n用户发来了 {image_count} 张图片（已作为附件直接传给你，请直接查看图片内容回答）。\n"

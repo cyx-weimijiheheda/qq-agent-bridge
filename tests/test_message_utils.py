@@ -565,3 +565,33 @@ def test_extract_group_message_returns_none_for_private():
 def test_extract_private_message_still_returns_none_for_group():
     # 回归：私聊解析器不能开始接受群消息
     assert extract_private_message(_group_event([{"type": "text", "data": {"text": "hi"}}])) is None
+
+
+def test_persona_prompt_injects_now_text():
+    """闲聊提示词要带上当前时间：模型没有内置时钟，非白名单群友也拿不到 shell。"""
+    from message_utils import build_persona_prompt
+
+    prompt = build_persona_prompt(
+        "test-persona", "今天几号", now_text="2026-11-14 09:20 星期六"
+    )
+    assert "当前时间：2026-11-14 09:20 星期六" in prompt
+    # 时间要排在用户消息之前，模型才把它当上下文而不是提问内容
+    assert prompt.index("当前时间") < prompt.rindex("今天几号")
+
+
+def test_persona_prompt_without_now_text_stays_clean():
+    """不传 now_text 时不注入，避免影响既有调用方与测试。"""
+    from message_utils import build_persona_prompt
+
+    prompt = build_persona_prompt("test-persona", "你好")
+    assert "当前时间" not in prompt
+
+
+def test_now_text_format():
+    """时间格式固定为 YYYY-MM-DD HH:MM 星期X，与主动消息保持一致。"""
+    import re as _re
+
+    from handlers import _now_text
+
+    text = _now_text()
+    assert _re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期[一二三四五六日]", text)
