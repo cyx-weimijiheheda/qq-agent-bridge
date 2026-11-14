@@ -618,3 +618,35 @@ def test_task_delete_and_detail(tmp_path):
     r = client.post("/api/tasks/delete", headers=authed(None), json={"id": rid, "scope": "10001"})
     assert r.status_code == 409
     assert bridge.state_db.get_task(rid) is not None
+
+
+def test_log_file_id_changes_after_clear(tmp_path):
+    """清空日志后 file_id 必须变，否则前端会拿旧 offset 当增量继续读。"""
+    client, bridge, log_path = _log_client(tmp_path, "a\nb\n")
+    before = client.get("/api/logs", headers=authed(None)).json()
+
+    client.post("/api/logs/clear", headers=authed(None))
+    after = client.get("/api/logs", headers=authed(None)).json()
+
+    assert before["file_id"] != after["file_id"], "清空后 file_id 应该变化"
+    assert after["lines"] == []
+    assert after["offset"] == 0
+
+
+def test_log_incremental_after_clear_does_not_duplicate(tmp_path):
+    """用清空前的旧 offset 再次请求，不能把新内容整批重复返回。"""
+    client, bridge, log_path = _log_client(tmp_path, "a\nb\n")
+    first = client.get("/api/logs", headers=authed(None)).json()
+
+    client.post("/api/logs/clear", headers=authed(None))
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("c\n")
+
+    again = client.get(
+        "/api/logs",
+        headers=authed(None),
+        params={"since": first["offset"], "file_id": first["file_id"]},
+    ).json()
+    # 文件已重置，后端必须走「重新加载」而不是增量
+    assert again["rotated"] is True
+    assert again["lines"] == ["c"]

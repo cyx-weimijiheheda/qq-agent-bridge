@@ -580,7 +580,7 @@ const state = {
   tab: "logs",
   scope: "",
   authFailed: false,
-  logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "", traceOnly: false, seq: 0 },
+  logs: { offset: 0, fileId: "", follow: true, timer: null, level: "", q: "", traceOnly: false, seq: 0, inFlight: false },
   settings: { entries: [], dirty: new Set() },
 };
 
@@ -815,6 +815,19 @@ function renderLogHead(line) {
 
 function appendLogs(lines, dividerText) {
   const view = $("logView");
+  // 兜底去重：记录已渲染的行内容指纹，同一批内容不会追加第二次
+  if (!appendLogs._seen) appendLogs._seen = new Set();
+  const seen = appendLogs._seen;
+  const fresh = [];
+  for (const line of lines) {
+    const key = line.slice(0, 120);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fresh.push(line);
+  }
+  if (appendLogs._seen.size > 4000) appendLogs._seen = new Set([...seen].slice(-2000));
+  lines = fresh;
+  if (!lines.length && !dividerText) return;
   const atBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 8;
 
   if (dividerText) {
@@ -872,15 +885,27 @@ function appendLogs(lines, dividerText) {
   if (atBottom) view.scrollTop = view.scrollHeight;
 }
 
+
+/* 清空日志视图时必须同时清空去重集合，否则重新加载的内容会被判成重复而丢弃 */
+function clearLogView() {
+  $("logView").replaceChildren();
+  appendLogs._seen = new Set();
+}
+
 async function loadLogs(reset) {
   const logs = state.logs;
+  /* 轮询间隔 1.5s，但请求可能更慢：若上一次还没回来又发一次，
+     两次会带同一个 offset，同一批日志就被追加两遍。
+     用 inFlight 挡住重叠请求——不是丢弃，是等它结束后下一轮再来。 */
+  if (logs.inFlight && !reset) return;
+  logs.inFlight = true;
   /* 切标签或连续点重载会并发发起请求，先回来的旧响应若照常追加就会重复；
      用序号标记最新一次请求，过期的响应直接丢弃 */
   const seq = ++logs.seq;
   if (reset) {
     logs.offset = 0;
     logs.fileId = "";
-    $("logView").replaceChildren();
+    clearLogView();
   }
   const params = new URLSearchParams({
     since: logs.offset,
@@ -894,22 +919,35 @@ async function loadLogs(reset) {
   try {
     d = await api("/api/logs?" + params.toString());
   } catch (err) {
+    logs.inFlight = false;
     if (seq !== logs.seq) return;
     toast(err.message, "bad");
     stopLogPolling();
     return;
   }
+  logs.inFlight = false;
   if (seq !== logs.seq) return;
   let divider = null;
+  /* 文件被轮转或清空时后端会标记 rotated：必须清空视图并从 0 重来，
+     否则旧 offset 会让同一批内容再追加一遍。 */
   if (d.rotated) {
-    divider = "—— 日志已轮转，已重新加载 ——";
+    divider = "—— 日志已轮转或清空，已重新加载 ——";
     logs.offset = 0;
-    logs.fileId = "";
-    $("logView").replaceChildren();
+    logs.fileId = d.file_id || "";
+    clearLogView();
+  } else if (logs.fileId && d.file_id && logs.fileId !== d.file_id) {
+    /* 兜底：file_id 变了但后端没标 rotated（例如 inode 复用被识别出来），
+       同样按重置处理 */
+    divider = "—— 日志文件已更换，已重新加载 ——";
+    logs.offset = 0;
+    logs.fileId = d.file_id;
+    clearLogView();
   }
-  appendLogs(d.lines, divider);
+  /* 先推进 offset 再渲染：反过来的话，渲染期间若有并发请求发出，
+     会带着旧 offset 读同一批内容，造成整块重复追加 */
   logs.offset = d.offset;
   logs.fileId = d.file_id;
+  appendLogs(d.lines, divider);
 
   const kb = d.size >= 1024 ? (d.size / 1024).toFixed(1) + " KB" : d.size + " B";
   $("logMeta").textContent = d.exists

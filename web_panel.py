@@ -710,6 +710,24 @@ class WebPanel:
         root = getattr(self.bridge, "bridge_dir", None) or Path.cwd()
         return Path(root) / "data" / raw
 
+    def _log_generation_path(self, path: Path) -> Path:
+        return path.with_name(path.name + ".gen")
+
+    def _log_generation(self, path: Path) -> int:
+        """读取清空代际，用于让 file_id 在清空后必定改变。"""
+        try:
+            return int(self._log_generation_path(path).read_text(encoding="utf-8").strip() or 0)
+        except (OSError, ValueError):
+            return 0
+
+    def _bump_log_generation(self, path: Path) -> int:
+        value = self._log_generation(path) + 1
+        try:
+            self._log_generation_path(path).write_text(str(value), encoding="utf-8")
+        except OSError as exc:
+            logging.warning("写入日志代际失败：%s", exc)
+        return value
+
     def _log_backup_paths(self, path: Path) -> list[Path]:
         """轮转备份文件（bridge.log.1、.2 …），按 log_backup_count 推断。"""
         try:
@@ -744,6 +762,10 @@ class WebPanel:
                     path.unlink()
                 except FileNotFoundError:
                     pass
+                # 删掉后用 open(..., "w") 重建：touch() 会复用刚删掉的 inode，
+                # file_id 不变，前端就会拿旧偏移当增量继续读，导致整块重复。
+                with path.open("w", encoding="utf-8"):
+                    pass
                 handler.stream = handler._open()
             finally:
                 handler.release()
@@ -753,6 +775,8 @@ class WebPanel:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("w", encoding="utf-8"):
                 pass
+
+        self._bump_log_generation(path)
 
         removed = 0
         for backup in backups:
@@ -802,7 +826,13 @@ class WebPanel:
             return result
 
         size = int(stat.st_size)
-        file_id = f"{getattr(stat, 'st_dev', 0)}:{getattr(stat, 'st_ino', 0)}"
+        # 只靠 dev:ino 不够：文件系统会复用 inode，清空日志后前端可能仍把它
+        # 当成同一个文件继续增量读，于是整块重复。这里额外拼一个「清空代际」，
+        # 每次清空递增，保证 file_id 一定变化。
+        file_id = (
+            f"{getattr(stat, 'st_dev', 0)}:{getattr(stat, 'st_ino', 0)}"
+            f":{self._log_generation(path)}"
+        )
         result.update({"exists": True, "size": size, "file_id": file_id})
 
         incremental = (
