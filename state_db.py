@@ -595,14 +595,50 @@ class StateDB:
 
     @staticmethod
     def _snippet_around(content: str, terms: list[str], radius: int = 60, size: int = 180) -> str:
-        index = -1
+        """截取命中词所在的那一行（必要时带上下各一行）。
+
+        按字符窗口切会把表格行切成半句，模型读到「…型文。这些更新快 | 梗 | 意思 | |」
+        这种碎片就判断不出结论，所以优先按整行返回。
+        """
+        lines = content.split("\n")
+        hit = -1
+        for term in terms:
+            for idx, line in enumerate(lines):
+                if term in line:
+                    hit = idx
+                    break
+            if hit >= 0:
+                break
+        if hit >= 0:
+            line = lines[hit]
+            # 命中行特别长（整段没有换行）时退回字符窗口，否则命中词会被截掉
+            if len(line) > 400:
+                index = 0
+                for term in terms:
+                    found = line.find(term)
+                    if found >= 0:
+                        index = found
+                        break
+                start = max(0, index - radius)
+                end = min(len(line), start + size)
+                snippet = line[start:end].strip()
+                if start > 0:
+                    snippet = "…" + snippet
+                if end < len(line):
+                    snippet = snippet + "…"
+                return snippet
+            # 命中行本身可能很短（如单独的标题），前后各补一行上下文
+            start = max(0, hit - 1)
+            end = min(len(lines), hit + 2)
+            picked = [line.strip() for line in lines[start:end] if line.strip()]
+            return " / ".join(picked)
+        # 没有行级命中时退回字符窗口
+        index = 0
         for term in terms:
             found = content.find(term)
             if found >= 0:
                 index = found
                 break
-        if index < 0:
-            index = 0
         start = max(0, index - radius)
         end = start + size
         snippet = content[start:end].replace("\n", " ").strip()
